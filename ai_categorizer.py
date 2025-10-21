@@ -68,6 +68,21 @@ class AICategorizer:
                 "subcategories": ["income", "expenses", "investments", "bills", "budget"],
                 "examples": ["зарплата", "траты", "инвестиции", "счета", "бюджет"]
             },
+            "ideas": {
+                "description": "Идеи, мысли, заметки",
+                "subcategories": ["ideas", "thoughts", "notes"],
+                "examples": ["идея", "мысль", "заметка", "размышление"]
+            },
+            "projects": {
+                "description": "Проекты, задачи, цели",
+                "subcategories": ["projects", "tasks", "goals"],
+                "examples": ["проект", "задача", "цель"]
+            },
+            "goals": {
+                "description": "Цели, задачи, цели",
+                "subcategories": ["goals", "tasks", "goals"],
+                "examples": ["цель", "задача", "цель"]
+            },
             "unclassified": {
                 "description": "Неразобранное - то, что не подходит под другие категории",
                 "subcategories": ["misc", "ideas", "thoughts", "notes"],
