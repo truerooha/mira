@@ -1,0 +1,320 @@
+"""
+AI генератор умных ответов для функции "расскажи"
+Проект "Второй мозг" - персональный голосовой интеллект
+"""
+
+import json
+import asyncio
+from typing import Dict, List, Optional
+from datetime import datetime, timedelta
+import openai
+from openai import AsyncOpenAI
+import logging
+
+logger = logging.getLogger(__name__)
+
+class AIResponseGenerator:
+    """AI генератор умных и человечных ответов"""
+    
+    def __init__(self, api_key: str, base_url: str = "https://api.deepseek.com"):
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url
+        )
+        
+        # Шаблоны для разных типов ответов
+        self.response_templates = {
+            'found_info': {
+                'positive': [
+                    "Вот что я знаю о {topic}:",
+                    "Конечно! Расскажу о {topic}:",
+                    "Да, у меня есть информация о {topic}:",
+                    "Помню! Вот что я знаю о {topic}:"
+                ],
+                'neutral': [
+                    "Нашла кое-что о {topic}:",
+                    "Вот что удалось найти о {topic}:",
+                    "Есть несколько записей о {topic}:"
+                ]
+            },
+            'not_found': {
+                'caring': [
+                    "К сожалению, я пока ничего не знаю о {topic}. Но я обязательно запомню, когда ты расскажешь!",
+                    "Пока у меня нет информации о {topic}. Расскажи мне что-нибудь, и я запомню!",
+                    "О {topic} я пока ничего не знаю. Но я внимательно слушаю и запоминаю все, что ты говоришь!",
+                    "Пока моя память пуста об этом. Но я готова учиться и запоминать все, что ты мне расскажешь!"
+                ],
+                'encouraging': [
+                    "Пока нет данных о {topic}, но это отличная возможность пополнить мою память!",
+                    "О {topic} пока тишина в моих записях. Расскажи что-нибудь интересное!",
+                    "Моя память об этом пока чиста. Но я готова заполнить её твоими историями!"
+                ]
+            },
+            'recent_activity': [
+                "Кстати, недавно ты упоминал:",
+                "А вот что было недавно:",
+                "Кстати, в последнее время:",
+                "Недавно ты говорил:"
+            ],
+            'related_info': [
+                "Также связанное с этим:",
+                "Еще по теме:",
+                "Кстати, есть связанная информация:",
+                "Также упоминалось:"
+            ]
+        }
+    
+    def _create_system_prompt(self) -> str:
+        """Создает системный промпт для генерации ответов"""
+        return """Ты - заботливый женский голос персонального ассистента "Мира". Твоя задача - анализировать найденную информацию и генерировать теплые, человечные ответы.
+
+СТИЛЬ ОБЩЕНИЯ:
+- Теплый, заботливый тон
+- Короткие, понятные предложения
+- Эмодзи для эмоциональности
+- Личное обращение "ты"
+- Женская перспектива
+
+ПРИНЦИПЫ:
+1. Если есть информация - расскажи кратко и по делу
+2. Если информации нет - будь заботливой и ободряющей
+3. Используй найденные данные для контекста
+4. Добавляй связанную информацию если уместно
+5. Будь естественной, как подруга
+
+ФОРМАТ ОТВЕТА (строго JSON):
+{
+    "response": "основной ответ пользователю",
+    "tone": "caring|informative|encouraging",
+    "has_info": true/false,
+    "confidence": 0.8,
+    "suggestions": ["предложение1", "предложение2"]
+}
+
+ВАЖНО:
+- Отвечай ТОЛЬКО валидным JSON
+- Не добавляй никакого текста кроме JSON
+- Будь искренней и заботливой
+- Используй русский язык
+- Максимум 3-4 предложения в ответе"""
+    
+    def _format_search_data(self, search_results: Dict) -> str:
+        """Форматирует результаты поиска для AI"""
+        data_summary = []
+        
+        # Основная информация
+        if search_results['entities_found']:
+            entities_text = []
+            for entity in search_results['entities_found'][:3]:  # Топ-3 сущности
+                entities_text.append(f"{entity['name']} ({entity['type']})")
+            data_summary.append(f"Найденные сущности: {', '.join(entities_text)}")
+        
+        if search_results['entries_found']:
+            entries_text = []
+            for entry in search_results['entries_found'][:3]:  # Топ-3 записи
+                # Обрезаем длинный текст
+                text = entry['original_text'][:100] + "..." if len(entry['original_text']) > 100 else entry['original_text']
+                entries_text.append(f'"{text}"')
+            data_summary.append(f"Записи: {'; '.join(entries_text)}")
+        
+        if search_results['related_entities']:
+            related_text = [e['name'] for e in search_results['related_entities'][:2]]
+            data_summary.append(f"Связанные сущности: {', '.join(related_text)}")
+        
+        if search_results['recent_entries']:
+            recent_text = []
+            for entry in search_results['recent_entries'][:2]:
+                text = entry['original_text'][:80] + "..." if len(entry['original_text']) > 80 else entry['original_text']
+                recent_text.append(f'"{text}"')
+            data_summary.append(f"Недавние записи: {'; '.join(recent_text)}")
+        
+        return "\n".join(data_summary)
+    
+    def _extract_topic_from_query(self, query: str) -> str:
+        """Извлекает основную тему из запроса"""
+        # Убираем служебные слова
+        stop_words = {'расскажи', 'о', 'про', 'что', 'знаешь', 'ли', 'покажи', 'есть'}
+        words = query.lower().split()
+        topic_words = [w for w in words if w not in stop_words and len(w) > 2]
+        
+        if topic_words:
+            return ' '.join(topic_words[:3])  # Первые 3 значимых слова
+        return query
+    
+    async def generate_response(self, query: str, search_results: Dict) -> Dict:
+        """Генерирует умный ответ на основе поиска"""
+        try:
+            topic = self._extract_topic_from_query(query)
+            has_info = len(search_results['entries_found']) > 0 or len(search_results['entities_found']) > 0
+            
+            # Формируем контекст для AI
+            context = f"""
+ЗАПРОС ПОЛЬЗОВАТЕЛЯ: "{query}"
+ТЕМА: {topic}
+ЕСТЬ ЛИ ИНФОРМАЦИЯ: {has_info}
+
+ДАННЫЕ ИЗ ПОИСКА:
+{self._format_search_data(search_results)}
+
+СТАТИСТИКА ПОИСКА:
+- Найдено сущностей: {search_results['search_stats']['total_entities']}
+- Найдено записей: {search_results['search_stats']['total_entries']}
+- Типы поиска: {', '.join(search_results['search_stats']['search_types_used'])}
+"""
+            
+            system_prompt = self._create_system_prompt()
+            
+            response = await self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": context}
+                ],
+                temperature=0.7,  # Немного креативности для человечности
+                max_tokens=500
+            )
+            
+            # Парсим JSON ответ
+            content = response.choices[0].message.content.strip()
+            
+            # Убираем возможные markdown блоки
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.endswith("```"):
+                content = content[:-3]
+            
+            result = json.loads(content)
+            
+            # Валидируем и дополняем результат
+            return self._validate_response(result, has_info, topic)
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Ошибка парсинга JSON от AI: {e}")
+            return self._fallback_response(query, search_results)
+        except Exception as e:
+            logger.error(f"Ошибка генерации ответа: {e}")
+            return self._fallback_response(query, search_results)
+    
+    def _validate_response(self, result: Dict, has_info: bool, topic: str) -> Dict:
+        """Валидирует и дополняет ответ AI"""
+        # Убеждаемся, что все обязательные поля есть
+        if "response" not in result:
+            result["response"] = self._generate_fallback_text(has_info, topic)
+        
+        if "tone" not in result:
+            result["tone"] = "caring" if not has_info else "informative"
+        
+        if "has_info" not in result:
+            result["has_info"] = has_info
+        
+        if "confidence" not in result:
+            result["confidence"] = 0.8 if has_info else 0.6
+        
+        if "suggestions" not in result:
+            result["suggestions"] = self._generate_suggestions(has_info, topic)
+        
+        return result
+    
+    def _generate_fallback_text(self, has_info: bool, topic: str) -> str:
+        """Генерирует fallback текст при ошибке AI"""
+        if has_info:
+            return f"Вот что я знаю о {topic} 📚"
+        else:
+            return f"Пока я ничего не знаю о {topic}, но готова запомнить! 💭"
+    
+    def _generate_suggestions(self, has_info: bool, topic: str) -> List[str]:
+        """Генерирует предложения для пользователя"""
+        if has_info:
+            return [
+                "Хочешь узнать больше деталей?",
+                "Расскажи что-то новое об этом!",
+                "Есть еще вопросы?"
+            ]
+        else:
+            return [
+                "Расскажи мне что-нибудь об этом!",
+                "Поделись историей!",
+                "Что бы ты хотел, чтобы я запомнила?"
+            ]
+    
+    def _fallback_response(self, query: str, search_results: Dict) -> Dict:
+        """Fallback ответ при ошибке AI"""
+        topic = self._extract_topic_from_query(query)
+        has_info = len(search_results['entries_found']) > 0 or len(search_results['entities_found']) > 0
+        
+        if has_info:
+            # Есть информация - показываем кратко
+            response_text = f"Вот что я знаю о {topic}:\n\n"
+            
+            if search_results['entities_found']:
+                entities = [e['name'] for e in search_results['entities_found'][:3]]
+                response_text += f"🏷️ Сущности: {', '.join(entities)}\n"
+            
+            if search_results['entries_found']:
+                response_text += "📝 Записи:\n"
+                for entry in search_results['entries_found'][:2]:
+                    text = entry['original_text'][:100] + "..." if len(entry['original_text']) > 100 else entry['original_text']
+                    response_text += f"• {text}\n"
+        else:
+            # Нет информации - заботливый ответ
+            response_text = f"Пока я ничего не знаю о {topic}, но я внимательно слушаю и запоминаю все, что ты говоришь! 💭"
+        
+        return {
+            "response": response_text,
+            "tone": "caring" if not has_info else "informative",
+            "has_info": has_info,
+            "confidence": 0.5,
+            "suggestions": self._generate_suggestions(has_info, topic),
+            "fallback": True
+        }
+    
+    def format_final_response(self, ai_response: Dict, search_results: Dict) -> str:
+        """Форматирует финальный ответ для пользователя"""
+        response = ai_response["response"]
+        
+        # Добавляем эмодзи в зависимости от тона
+        if ai_response["tone"] == "caring":
+            response = "💕 " + response
+        elif ai_response["tone"] == "informative":
+            response = "📚 " + response
+        elif ai_response["tone"] == "encouraging":
+            response = "✨ " + response
+        
+        # Добавляем дополнительную информацию если есть
+        if ai_response["has_info"] and search_results['search_stats']['total_entries'] > 3:
+            response += f"\n\n📊 Всего найдено {search_results['search_stats']['total_entries']} записей"
+        
+        # Добавляем предложения
+        if ai_response.get("suggestions"):
+            response += f"\n\n💡 {ai_response['suggestions'][0]}"
+        
+        return response
+
+# Пример использования
+async def test_response_generator():
+    """Тестируем генератор ответов"""
+    # Замените на ваш API ключ DeepSeek
+    api_key = "your-deepseek-api-key"
+    
+    generator = AIResponseGenerator(api_key)
+    
+    # Тестовые данные
+    test_query = "расскажи о Васе"
+    test_search_results = {
+        'entities_found': [
+            {'id': 1, 'name': 'Вася', 'type': 'person', 'mention_count': 3}
+        ],
+        'entries_found': [
+            {'id': 1, 'original_text': 'Встретил Васю в автосервисе', 'entity_names': 'Вася', 'tag_names': 'люди,места'},
+            {'id': 2, 'original_text': 'Вася купил новую машину', 'entity_names': 'Вася', 'tag_names': 'люди,автомобили'}
+        ],
+        'search_stats': {'total_entities': 1, 'total_entries': 2, 'search_types_used': ['entities_person']}
+    }
+    
+    result = await generator.generate_response(test_query, test_search_results)
+    print(f"Ответ: {result['response']}")
+    print(f"Тон: {result['tone']}")
+    print(f"Есть информация: {result['has_info']}")
+
+if __name__ == "__main__":
+    asyncio.run(test_response_generator())

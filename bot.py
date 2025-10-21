@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from database import DatabaseManager
 from categorization import CategorizationEngine
 from ai_categorizer import AICategorizer
+from smart_tell import SmartTellEngine
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +30,7 @@ TRANSCRIPTS_DIR.mkdir(exist_ok=True)
 db = DatabaseManager("mira_brain.db")
 categorizer = CategorizationEngine()
 ai_categorizer = AICategorizer(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
+smart_tell = SmartTellEngine(db, DEEPSEEK_API_KEY)
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await update.message.voice.get_file()
@@ -60,24 +62,50 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверяем команды в тексте
         
         if "расскажи" in text.lower() or "tell me" in text.lower() or "show me" in text.lower():
-            # Получаем записи из базы данных
-            entries = db.get_user_entries(user_id, limit=5)
-            if entries:
-                response = "📚 Твои записи:\n\n"
-                for entry in entries:
-                    response += f"#{entry['id']}: {entry['original_text']}\n"
-                    response += f"📅 {entry['created_at']}\n\n"
-                await update.message.reply_text(response)
+            # Используем умную функцию "расскажи"
+            await update.message.reply_text("🤔 Думаю...")
+            
+            # Извлекаем тему из запроса
+            query = text.lower()
+            if "расскажи" in query:
+                query = query.replace("расскажи", "").strip()
+            elif "tell me" in query:
+                query = query.replace("tell me", "").strip()
+            elif "show me" in query:
+                query = query.replace("show me", "").strip()
+            
+            # Если запрос пустой, показываем общую статистику
+            if not query or len(query.strip()) < 2:
+                response = smart_tell.get_user_stats_summary(user_id)
             else:
-                await update.message.reply_text("📭 Память пуста.")
+                # Используем умный поиск
+                response = await smart_tell.process_tell_request(user_id, query)
+            
+            # Обновляем сообщение с результатом
+            await update.message.reply_text(response)
                 
         elif "статистика" in text.lower() or "stats" in text.lower():
-            # Показываем статистику пользователя
-            stats = db.get_stats(user_id)
-            response = f"📊 Твоя статистика:\n\n"
-            response += f"📝 Записей: {stats['entries']}\n"
-            response += f"🏷️ Сущностей: {stats['entities']}\n"
-            response += f"⏰ Напоминаний: {stats['active_reminders']}\n"
+            # Показываем расширенную статистику пользователя
+            response = smart_tell.get_user_stats_summary(user_id)
+            await update.message.reply_text(response)
+            
+        elif "инсайты" in text.lower() or "insights" in text.lower():
+            # Показываем быстрые инсайты
+            response = smart_tell.get_quick_insights(user_id)
+            await update.message.reply_text(response)
+            
+        elif "напоминания" in text.lower() or "reminders" in text.lower():
+            # Показываем активные напоминания
+            reminders = db.get_active_reminders(user_id)
+            if reminders:
+                response = "⏰ Твои активные напоминания:\n\n"
+                for reminder in reminders[:5]:  # Показываем до 5 напоминаний
+                    response += f"• {reminder['text']}\n"
+                    if reminder['trigger_condition']:
+                        response += f"  📅 {reminder['trigger_condition']}\n"
+                    response += "\n"
+            else:
+                response = "⏰ У тебя нет активных напоминаний"
             await update.message.reply_text(response)
             
         else:
@@ -169,11 +197,17 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧠 Второй мозг готов!\n\n"
-        "Команды:\n"
+        "🎙️ Основные команды:\n"
         "• Любое голосовое сообщение → автоматически сохраню в память\n"
-        "• Скажи 'расскажи' или 'tell me' → покажу твои записи\n"
-        "• Скажи 'статистика' или 'stats' → покажу статистику\n"
-        "• Просто говори - я все запомню!"
+        "• 'расскажи о [теме]' → умный поиск и анализ\n"
+        "• 'статистика' → твоя память в цифрах\n"
+        "• 'инсайты' → быстрые инсайты о твоих данных\n"
+        "• 'напоминания' → активные напоминания\n\n"
+        "💡 Примеры:\n"
+        "• 'расскажи о Васе'\n"
+        "• 'что знаешь о работе'\n"
+        "• 'покажи напоминания'\n\n"
+        "✨ Просто говори - я все запомню и проанализирую!"
     )
 
 def main():
