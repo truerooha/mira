@@ -67,6 +67,21 @@ class AIQueryParser:
                 "description": "Финансы, деньги, покупки",
                 "examples": ["деньги", "покупка", "трата", "бюджет"],
                 "synonyms": ["финансы", "средства", "капитал", "ресурсы"]
+            },
+            "measurement": {
+                "description": "Измерения, показатели, метрики",
+                "examples": ["вес", "рост", "давление", "температура", "пульс"],
+                "synonyms": ["показатель", "метрика", "измерение", "значение"]
+            },
+            "action": {
+                "description": "Действия, операции, процедуры",
+                "examples": ["менял", "починил", "купил", "сделал", "ремонтировал"],
+                "synonyms": ["выполнил", "осуществил", "провел", "занимался"]
+            },
+            "temporal": {
+                "description": "Временные указания и изменения",
+                "examples": ["как менялся", "за время", "в мае", "в этом году", "динамика"],
+                "synonyms": ["изменения", "эволюция", "тренд", "паттерн", "история"]
             }
         }
     
@@ -84,25 +99,34 @@ class AIQueryParser:
 2. Извлеки ключевые слова и определи их типы
 3. Нормализуй слова (приведи к базовой форме)
 4. Найди синонимы и связанные понятия
-5. Определи намерение пользователя
-6. Предложи варианты поиска
+5. Определи намерение пользователя (search, temporal_analysis, grouping, location_search)
+6. Определи тип аналитического запроса если применимо
+7. Предложи варианты поиска
+
+ОСОБОЕ ВНИМАНИЕ:
+- Запросы типа "как менялся" = temporal_analysis
+- Запросы типа "что ремонтировал" = grouping + action
+- Запросы типа "где менял" = location_search + action
+- Измерения (вес, давление) = measurement
+- Действия (менял, починил) = action
 
 ФОРМАТ ОТВЕТА (строго JSON):
 {{
-    "intent": "search|statistics|insights|reminders",
+    "intent": "search|temporal_analysis|grouping|location_search|statistics|insights|reminders",
     "main_topic": "основная тема запроса",
+    "analytical_type": "weight_tracking|maintenance_history|expense_analysis|location_search|null",
     "entities": [
         {{
             "original": "оригинальное слово",
             "normalized": "нормализованная форма",
-            "type": "person|place|object|event|task|reminder|work|health|finance",
+            "type": "person|place|object|event|task|reminder|work|health|finance|measurement|action|temporal|unclassified",
             "confidence": 0.9,
             "synonyms": ["синоним1", "синоним2"],
             "context": "контекст использования"
         }}
     ],
     "search_keywords": ["ключевое_слово1", "ключевое_слово2"],
-    "search_strategy": "exact|fuzzy|semantic|contextual",
+    "search_strategy": "exact|fuzzy|semantic|contextual|temporal|analytical",
     "suggestions": ["предложение1", "предложение2"],
     "confidence": 0.8
 }}
@@ -160,6 +184,9 @@ class AIQueryParser:
         if "main_topic" not in result:
             result["main_topic"] = original_query
         
+        if "analytical_type" not in result:
+            result["analytical_type"] = None
+        
         if "entities" not in result:
             result["entities"] = []
         
@@ -212,6 +239,7 @@ class AIQueryParser:
         return {
             "intent": "search",
             "main_topic": query,
+            "analytical_type": None,
             "entities": [
                 {
                     "original": word,
@@ -241,6 +269,9 @@ class AIQueryParser:
             'work': [],
             'health': [],
             'finance': [],
+            'measurement': [],
+            'action': [],
+            'temporal': [],
             'general': []
         }
         
@@ -278,6 +309,16 @@ class AIQueryParser:
     def get_suggestions(self, parsed_result: Dict) -> List[str]:
         """Получает предложения для пользователя"""
         return parsed_result.get("suggestions", [])
+    
+    def get_analytical_type(self, parsed_result: Dict) -> Optional[str]:
+        """Получает тип аналитического запроса"""
+        return parsed_result.get("analytical_type")
+    
+    def is_analytical_query(self, parsed_result: Dict) -> bool:
+        """Проверяет, является ли запрос аналитическим"""
+        intent = parsed_result.get("intent", "search")
+        analytical_type = parsed_result.get("analytical_type")
+        return intent in ["temporal_analysis", "grouping", "location_search"] or analytical_type is not None
 
 # Пример использования
 async def test_ai_parser():

@@ -82,6 +82,12 @@ class AIResponseGenerator:
 4. Добавляй связанную информацию если уместно
 5. Будь естественной, как подруга
 
+ОСОБЫЕ СЛУЧАИ:
+- Для аналитических запросов (вес, расходы, ремонт) - структурируй ответ
+- Для временных запросов - группируй по датам/периодам
+- Для поиска локаций - выделяй места
+- Извлекай числа, даты, суммы когда возможно
+
 ФОРМАТ ОТВЕТА (строго JSON):
 {
     "response": "основной ответ пользователю",
@@ -141,11 +147,124 @@ class AIResponseGenerator:
             return ' '.join(topic_words[:3])  # Первые 3 значимых слова
         return query
     
+    def _extract_structured_data(self, search_results: Dict) -> Dict:
+        """Извлекает структурированные данные из записей"""
+        structured_data = {
+            'measurements': [],  # вес: 79кг, дата: май 2023
+            'actions': [],       # менял масло, дата: 01.01.2024
+            'locations': [],     # где: улица Барбашова
+            'amounts': [],       # суммы: 3000руб
+            'dates': []          # даты: 01.01.2024
+        }
+        
+        # Простое извлечение из текста записей
+        for entry in search_results.get('entries_found', []):
+            text = entry.get('original_text', '')
+            
+            # Ищем измерения (вес, давление и т.д.)
+            import re
+            weight_match = re.search(r'(\d+)\s*(кг|килограмм)', text, re.IGNORECASE)
+            if weight_match:
+                structured_data['measurements'].append({
+                    'type': 'weight',
+                    'value': int(weight_match.group(1)),
+                    'unit': 'kg',
+                    'text': text
+                })
+            
+            # Ищем суммы
+            amount_match = re.search(r'(\d+)\s*(руб|рублей|₽)', text, re.IGNORECASE)
+            if amount_match:
+                structured_data['amounts'].append({
+                    'amount': int(amount_match.group(1)),
+                    'currency': 'RUB',
+                    'text': text
+                })
+            
+            # Ищем действия
+            if any(word in text.lower() for word in ['менял', 'починил', 'ремонтировал', 'купил']):
+                structured_data['actions'].append({
+                    'text': text,
+                    'type': 'maintenance' if any(word in text.lower() for word in ['масло', 'ремонт']) else 'action'
+                })
+            
+            # Ищем локации
+            location_words = ['улица', 'в', 'на', 'гараж', 'сервис', 'офис']
+            if any(word in text.lower() for word in location_words):
+                structured_data['locations'].append({
+                    'text': text,
+                    'type': 'location'
+                })
+        
+        return structured_data
+    
+    def _format_structured_data(self, search_results: Dict) -> str:
+        """Форматирует структурированные данные для AI"""
+        structured_data = self._extract_structured_data(search_results)
+        formatted = []
+        
+        if structured_data['measurements']:
+            formatted.append("ИЗМЕРЕНИЯ:")
+            for measurement in structured_data['measurements']:
+                formatted.append(f"- {measurement['type']}: {measurement['value']}{measurement['unit']}")
+        
+        if structured_data['actions']:
+            formatted.append("ДЕЙСТВИЯ:")
+            for action in structured_data['actions']:
+                formatted.append(f"- {action['text']}")
+        
+        if structured_data['amounts']:
+            formatted.append("СУММЫ:")
+            for amount in structured_data['amounts']:
+                formatted.append(f"- {amount['amount']} {amount['currency']}")
+        
+        if structured_data['locations']:
+            formatted.append("ЛОКАЦИИ:")
+            for location in structured_data['locations']:
+                formatted.append(f"- {location['text']}")
+        
+        return "\n".join(formatted) if formatted else "Структурированных данных не найдено"
+    
+    def _format_temporal_analysis(self, search_results: Dict) -> str:
+        """Форматирует временной анализ для AI"""
+        temporal_analysis = search_results.get('temporal_analysis')
+        if not temporal_analysis:
+            return "Временной анализ не выполнен"
+        
+        formatted = []
+        formatted.append(f"ТИП АНАЛИЗА: {temporal_analysis.get('type', 'unknown')}")
+        
+        # Измерения во времени
+        measurements = temporal_analysis.get('measurements_over_time', [])
+        if measurements:
+            formatted.append("ИЗМЕРЕНИЯ ПО ВРЕМЕНИ:")
+            for measurement in measurements:
+                formatted.append(f"- {measurement['date']}: {measurement['value']}{measurement['unit']}")
+        
+        # Временная линия действий
+        actions = temporal_analysis.get('actions_timeline', [])
+        if actions:
+            formatted.append("ВРЕМЕННАЯ ЛИНИЯ ДЕЙСТВИЙ:")
+            for action in actions:
+                formatted.append(f"- {action['date']}: {action['action']}")
+        
+        # Сводка локаций
+        locations = temporal_analysis.get('locations_summary', [])
+        if locations:
+            formatted.append("НАЙДЕННЫЕ ЛОКАЦИИ:")
+            for location in locations:
+                formatted.append(f"- {location}")
+        
+        return "\n".join(formatted) if formatted else "Временных данных не найдено"
+    
     async def generate_response(self, query: str, search_results: Dict) -> Dict:
         """Генерирует умный ответ на основе поиска"""
         try:
             topic = self._extract_topic_from_query(query)
             has_info = len(search_results['entries_found']) > 0 or len(search_results['entities_found']) > 0
+            
+            # Извлекаем структурированные данные
+            structured_data = self._format_search_data(search_results)
             
             # Формируем контекст для AI
             context = f"""
@@ -154,12 +273,18 @@ class AIResponseGenerator:
 ЕСТЬ ЛИ ИНФОРМАЦИЯ: {has_info}
 
 ДАННЫЕ ИЗ ПОИСКА:
-{self._format_search_data(search_results)}
+{structured_data}
 
 СТАТИСТИКА ПОИСКА:
 - Найдено сущностей: {search_results['search_stats']['total_entities']}
 - Найдено записей: {search_results['search_stats']['total_entries']}
 - Типы поиска: {', '.join(search_results['search_stats']['search_types_used'])}
+
+СТРУКТУРИРОВАННЫЕ ДАННЫЕ:
+{self._format_structured_data(search_results)}
+
+ВРЕМЕННОЙ АНАЛИЗ:
+{self._format_temporal_analysis(search_results)}
 """
             
             system_prompt = self._create_system_prompt()

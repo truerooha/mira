@@ -295,12 +295,22 @@ class SmartSearchEngine:
         """Комплексный поиск по запросу пользователя"""
         # Используем AI-парсинг если доступен
         if self.ai_parser:
-            parsed_query = await self.parse_query_ai(query)
+            parsed_result = await self.ai_parser.parse_query(query)
+            parsed_query = self.ai_parser.extract_search_terms(parsed_result)
+            is_analytical = self.ai_parser.is_analytical_query(parsed_result)
+            analytical_type = self.ai_parser.get_analytical_type(parsed_result)
         else:
             parsed_query = self.parse_query(query)
+            is_analytical = False
+            analytical_type = None
+            parsed_result = None
+        
         results = {
             'query': query,
             'parsed_keywords': parsed_query,
+            'parsed_result': parsed_result,
+            'is_analytical': is_analytical,
+            'analytical_type': analytical_type,
             'entities_found': [],
             'entries_found': [],
             'related_entities': [],
@@ -369,4 +379,70 @@ class SmartSearchEngine:
         results['search_stats']['total_entities'] = len(results['entities_found'])
         results['search_stats']['total_entries'] = len(results['entries_found'])
         
+        # Если это аналитический запрос, добавляем временной анализ
+        if is_analytical and analytical_type:
+            results['temporal_analysis'] = self._analyze_temporal_data(results['entries_found'], analytical_type)
+        
         return results
+    
+    def _analyze_temporal_data(self, entries: List[Dict], analytical_type: str) -> Dict:
+        """Анализирует временные данные для аналитических запросов"""
+        temporal_analysis = {
+            'type': analytical_type,
+            'measurements_over_time': [],
+            'actions_timeline': [],
+            'locations_summary': [],
+            'amounts_summary': []
+        }
+        
+        # Группируем записи по датам
+        entries_by_date = {}
+        for entry in entries:
+            date = entry.get('created_at', '')
+            if date:
+                date_key = date[:10]  # YYYY-MM-DD
+                if date_key not in entries_by_date:
+                    entries_by_date[date_key] = []
+                entries_by_date[date_key].append(entry)
+        
+        # Анализируем измерения во времени
+        if analytical_type == 'weight_tracking':
+            for date, day_entries in entries_by_date.items():
+                for entry in day_entries:
+                    text = entry.get('original_text', '')
+                    # Ищем вес в тексте
+                    import re
+                    weight_match = re.search(r'(\d+)\s*(кг|килограмм)', text, re.IGNORECASE)
+                    if weight_match:
+                        temporal_analysis['measurements_over_time'].append({
+                            'date': date,
+                            'value': int(weight_match.group(1)),
+                            'unit': 'kg',
+                            'text': text
+                        })
+        
+        # Анализируем действия
+        elif analytical_type == 'maintenance_history':
+            for date, day_entries in entries_by_date.items():
+                for entry in day_entries:
+                    text = entry.get('original_text', '')
+                    if any(word in text.lower() for word in ['менял', 'починил', 'ремонтировал']):
+                        temporal_analysis['actions_timeline'].append({
+                            'date': date,
+                            'action': text,
+                            'type': 'maintenance'
+                        })
+        
+        # Анализируем локации
+        elif analytical_type == 'location_search':
+            locations = set()
+            for entry in entries:
+                text = entry.get('original_text', '')
+                # Простое извлечение локаций
+                location_words = ['улица', 'в', 'на', 'гараж', 'сервис', 'офис']
+                for word in location_words:
+                    if word in text.lower():
+                        locations.add(text)
+            temporal_analysis['locations_summary'] = list(locations)
+        
+        return temporal_analysis
