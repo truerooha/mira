@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 import logging
+from date_parser import SmartDateParser
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +20,7 @@ class DatabaseManager:
     
     def __init__(self, db_path: str = "mira_brain.db"):
         self.db_path = Path(db_path)
+        self.date_parser = SmartDateParser()
         self.init_database()
     
     def init_database(self):
@@ -51,8 +53,27 @@ class DatabaseManager:
     def add_entry(self, user_id: int, original_text: str, 
                   processed_text: str = None, source_type: str = 'voice',
                   audio_file_path: str = None, metadata: Dict = None) -> int:
-        """Добавить новую запись"""
+        """Добавить новую запись с умным парсингом дат"""
         try:
+            # Парсим дату из текста
+            date_result = self.date_parser.parse_text(original_text)
+            
+            # Используем обработанный текст если дата была найдена
+            if date_result['confidence'] > 0.5:
+                processed_text = date_result['processed_text']
+                logger.info(f"📅 Дата распознана: {date_result['date_string']} (уверенность: {date_result['confidence']})")
+            
+            # Если metadata не задан, создаем его
+            if metadata is None:
+                metadata = {}
+            
+            # Добавляем информацию о дате в metadata
+            if date_result['datetime']:
+                metadata['parsed_date'] = date_result['date_string']
+                metadata['date_confidence'] = date_result['confidence']
+                if date_result['time_info']:
+                    metadata['time_of_day'] = date_result['time_info']
+            
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -66,6 +87,8 @@ class DatabaseManager:
                 conn.commit()
                 
                 logger.info(f"Добавлена запись #{entry_id} для пользователя {user_id}")
+                if date_result['confidence'] > 0.5:
+                    logger.info(f"📅 С датой: {date_result['date_string']}")
                 return entry_id
                 
         except Exception as e:
