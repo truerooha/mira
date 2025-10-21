@@ -1,24 +1,34 @@
 import os
 import subprocess
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 from database import DatabaseManager
+from categorization import CategorizationEngine
+from ai_categorizer import AICategorizer
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Загружаем .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WHISPER_PATH = os.getenv("WHISPER_PATH")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 TRANSCRIPTS_DIR = Path("transcripts")
 TRANSCRIPTS_DIR.mkdir(exist_ok=True)
 
-# Инициализируем базу данных
+# Инициализируем базу данных и движки категоризации
 db = DatabaseManager("mira_brain.db")
+categorizer = CategorizationEngine()
+ai_categorizer = AICategorizer(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await update.message.voice.get_file()
@@ -71,7 +81,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(response)
             
         else:
-            # По умолчанию сохраняем все записи
+            # Отправляем сообщение "Думаю..."
+            thinking_msg = await update.message.reply_text("🤔 Думаю...")
+            
+            # Сохраняем запись
             entry_id = db.add_entry(
                 user_id=user_id,
                 original_text=text,
@@ -79,10 +92,77 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 audio_file_path=str(txt_path)
             )
             
-            # TODO: Здесь будет извлечение сущностей и тегов
-            # Пока просто сохраняем базовую запись
+            # Пытаемся использовать AI категоризацию
+            if ai_categorizer:
+                try:
+                    categorization_result = await ai_categorizer.categorize_text(text)
+                    ai_used = True
+                except Exception as e:
+                    logger.error(f"Ошибка AI категоризации: {e}")
+                    # Fallback на регулярные выражения
+                    categorization_result = categorizer.categorize_text(text)
+                    ai_used = False
+            else:
+                # Используем только регулярные выражения
+                categorization_result = categorizer.categorize_text(text)
+                ai_used = False
             
-            await update.message.reply_text(f"🧠 Запомнил! (запись #{entry_id})")
+            # Сохраняем сущности
+            for entity_data in categorization_result["entities"]:
+                entity_id = db.add_entity(
+                    user_id=user_id,
+                    name=entity_data["name"],
+                    entity_type=entity_data["type"],
+                    attributes={
+                        "template": entity_data.get("template", "ai"),
+                        "confidence": entity_data["confidence"],
+                        "context": entity_data.get("context", text),
+                        "ai_used": ai_used
+                    }
+                )
+                # Связываем запись с сущностью
+                db.link_entry_entity(entry_id, entity_id, "mentioned")
+            
+            # Сохраняем теги
+            for tag_name in categorization_result["tags"]:
+                tag_id = db.add_tag(user_id, tag_name)
+                db.link_entry_tag(entry_id, tag_id)
+            
+            # Создаем напоминания если есть
+            for reminder_data in categorization_result["reminders"]:
+                trigger_condition = None
+                if categorization_result.get("temporal_info"):
+                    if isinstance(categorization_result["temporal_info"], dict):
+                        trigger_condition = categorization_result["temporal_info"].get("value")
+                    else:
+                        trigger_condition = str(categorization_result["temporal_info"])
+                
+                db.add_reminder(
+                    user_id=user_id,
+                    text=reminder_data["text"],
+                    trigger_condition=trigger_condition,
+                    entry_id=entry_id
+                )
+            
+            # Формируем ответ
+            response = f"🧠 Запомнил! (запись #{entry_id})"
+            if ai_used:
+                response += " 🤖"
+            
+            if categorization_result["entities"]:
+                entities_text = ", ".join([e["name"] for e in categorization_result["entities"][:3]])
+                response += f"\n🏷️ Сущности: {entities_text}"
+            
+            if categorization_result["tags"]:
+                tags_text = " ".join(categorization_result["tags"][:5])
+                response += f"\n📌 Теги: {tags_text}"
+            
+            if categorization_result.get("categories"):
+                categories_text = ", ".join(categorization_result["categories"][:2])
+                response += f"\n📂 Категории: {categories_text}"
+            
+            # Обновляем сообщение
+            await thinking_msg.edit_text(response)
     else:
         await update.message.reply_text("❌ Ошибка распознавания речи")
 

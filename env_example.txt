@@ -1,0 +1,9 @@
+# Telegram Bot Configuration
+BOT_TOKEN=your_telegram_bot_token_here
+
+# Whisper Configuration
+WHISPER_PATH=/path/to/whisper.cpp/main
+WHISPER_MODEL=/path/to/whisper/model.bin
+
+# DeepSeek AI Configuration
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
