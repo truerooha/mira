@@ -1,0 +1,82 @@
+# Зависимости Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Виртуальные окружения
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# База данных SQLite
+*.db
+*.sqlite
+*.sqlite3
+
+# Аудиофайлы и транскрипты
+transcripts/
+*.ogg
+*.wav
+*.mp3
+*.m4a
+*.wma
+
+# Логи
+*.log
+logs/
+
+# IDE файлы
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Временные файлы
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Конфиденциальные данные
+.env
+config.ini
+secrets.json
+
+# Whisper модели (если большие)
+*.bin
+*.gguf
+
+# Тестовые файлы
+test_*.db
+test_*.py
+
+# Внешние библиотеки
+whisper.cpp/
