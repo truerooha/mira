@@ -32,6 +32,150 @@ categorizer = CategorizationEngine()
 ai_categorizer = AICategorizer(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
 smart_tell = SmartTellEngine(db, DEEPSEEK_API_KEY)
 
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает текстовые сообщения"""
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
+    
+    # Проверяем команды в тексте
+    if "расскажи" in text.lower() or "tell me" in text.lower() or "show me" in text.lower():
+        # Используем умную функцию "расскажи"
+        thinking_msg = await update.message.reply_text("🤔 Думаю...")
+        
+        # Извлекаем тему из запроса
+        query = text.lower()
+        if "расскажи" in query:
+            query = query.replace("расскажи", "").strip()
+        elif "tell me" in query:
+            query = query.replace("tell me", "").strip()
+        elif "show me" in query:
+            query = query.replace("show me", "").strip()
+        
+        # Если запрос пустой, показываем общую статистику
+        if not query or len(query.strip()) < 2:
+            response = smart_tell.get_user_stats_summary(user_id)
+        else:
+            # Используем умный поиск
+            response = await smart_tell.process_tell_request(user_id, query)
+        
+        # Обновляем сообщение с результатом
+        await thinking_msg.edit_text(response)
+            
+    elif "статистика" in text.lower() or "stats" in text.lower():
+        # Показываем расширенную статистику пользователя
+        thinking_msg = await update.message.reply_text("🤔 Думаю...")
+        response = smart_tell.get_user_stats_summary(user_id)
+        await thinking_msg.edit_text(response)
+        
+    elif "инсайты" in text.lower() or "insights" in text.lower():
+        # Показываем быстрые инсайты
+        thinking_msg = await update.message.reply_text("🤔 Думаю...")
+        response = smart_tell.get_quick_insights(user_id)
+        await thinking_msg.edit_text(response)
+        
+    elif "напоминания" in text.lower() or "reminders" in text.lower():
+        # Показываем активные напоминания
+        reminders = db.get_active_reminders(user_id)
+        if reminders:
+            response = "⏰ Твои активные напоминания:\n\n"
+            for reminder in reminders[:5]:  # Показываем до 5 напоминаний
+                response += f"• {reminder['text']}\n"
+                if reminder['trigger_condition']:
+                    response += f"  📅 {reminder['trigger_condition']}\n"
+                response += "\n"
+        else:
+            response = "⏰ У тебя нет активных напоминаний"
+        await update.message.reply_text(response)
+        
+    else:
+        # Обрабатываем как обычную запись
+        await process_text_entry(update, text, user_id)
+
+async def process_text_entry(update: Update, text: str, user_id: int):
+    """Обрабатывает текстовую запись как обычное сообщение для сохранения"""
+    # Отправляем сообщение "Думаю..."
+    thinking_msg = await update.message.reply_text("🤔 Думаю...")
+    
+    # Сохраняем запись
+    entry_id = db.add_entry(
+        user_id=user_id,
+        original_text=text,
+        source_type='text',
+        audio_file_path=None
+    )
+    
+    # Пытаемся использовать AI категоризацию
+    if ai_categorizer:
+        try:
+            categorization_result = await ai_categorizer.categorize_text(text)
+            ai_used = True
+        except Exception as e:
+            logger.error(f"Ошибка AI категоризации: {e}")
+            # Fallback на регулярные выражения
+            categorization_result = categorizer.categorize_text(text)
+            ai_used = False
+    else:
+        # Используем только регулярные выражения
+        categorization_result = categorizer.categorize_text(text)
+        ai_used = False
+    
+    # Сохраняем сущности
+    for entity_data in categorization_result["entities"]:
+        entity_id = db.add_entity(
+            user_id=user_id,
+            name=entity_data["name"],
+            entity_type=entity_data["type"],
+            attributes={
+                "template": entity_data.get("template", "ai"),
+                "confidence": entity_data["confidence"],
+                "context": entity_data.get("context", text),
+                "ai_used": ai_used
+            }
+        )
+        # Связываем запись с сущностью
+        db.link_entry_entity(entry_id, entity_id, "mentioned")
+    
+    # Сохраняем теги
+    for tag_name in categorization_result["tags"]:
+        tag_id = db.add_tag(user_id, tag_name)
+        db.link_entry_tag(entry_id, tag_id)
+    
+    # Создаем напоминания если есть
+    for reminder_data in categorization_result["reminders"]:
+        trigger_condition = None
+        if categorization_result.get("temporal_info"):
+            if isinstance(categorization_result["temporal_info"], dict):
+                trigger_condition = categorization_result["temporal_info"].get("value")
+            else:
+                trigger_condition = str(categorization_result["temporal_info"])
+        
+        db.add_reminder(
+            user_id=user_id,
+            text=reminder_data["text"],
+            trigger_condition=trigger_condition,
+            entry_id=entry_id
+        )
+    
+    # Формируем ответ
+    response = f"🧠 Запомнил! (запись #{entry_id})"
+    if ai_used:
+        response += " 🤖"
+    
+    if categorization_result["entities"]:
+        entities_text = ", ".join([e["name"] for e in categorization_result["entities"][:3]])
+        response += f"\n🏷️ Сущности: {entities_text}"
+    
+    if categorization_result["tags"]:
+        tags_text = " ".join(categorization_result["tags"][:5])
+        response += f"\n📌 Теги: {tags_text}"
+    
+    if categorization_result.get("categories"):
+        categories_text = ", ".join(categorization_result["categories"][:2])
+        response += f"\n📂 Категории: {categories_text}"
+    
+    # Обновляем сообщение
+    await thinking_msg.edit_text(response)
+
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await update.message.voice.get_file()
     user_id = update.effective_user.id
@@ -201,6 +345,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🧠 Второй мозг готов!\n\n"
         "🎙️ Основные команды:\n"
         "• Любое голосовое сообщение → автоматически сохраню в память\n"
+        "• Любое текстовое сообщение → тоже сохраню и проанализирую\n"
         "• 'расскажи о [теме]' → умный поиск и анализ\n"
         "• 'статистика' → твоя память в цифрах\n"
         "• 'инсайты' → быстрые инсайты о твоих данных\n"
@@ -208,8 +353,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💡 Примеры:\n"
         "• 'расскажи о Васе'\n"
         "• 'что знаешь о работе'\n"
-        "• 'покажи напоминания'\n\n"
-        "✨ Просто говори - я все запомню и проанализирую!"
+        "• 'покажи напоминания'\n"
+        "• 'Встретил Васю в автосервисе' (текстом)\n\n"
+        "✨ Просто говори или пиши - я все запомню и проанализирую!"
     )
 
 def main():
@@ -219,6 +365,7 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.COMMAND & filters.Regex("^/start$"), start))
     app.add_handler(MessageHandler(filters.VOICE, handle_audio))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling()
 
 if __name__ == "__main__":
