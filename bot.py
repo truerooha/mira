@@ -63,7 +63,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if "расскажи" in text.lower() or "tell me" in text.lower() or "show me" in text.lower():
             # Используем умную функцию "расскажи"
-            await update.message.reply_text("🤔 Думаю...")
+            thinking_msg = await update.message.reply_text("🤔 Думаю...")
             
             # Извлекаем тему из запроса
             query = text.lower()
@@ -82,17 +82,19 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 response = await smart_tell.process_tell_request(user_id, query)
             
             # Обновляем сообщение с результатом
-            await update.message.reply_text(response)
+            await thinking_msg.edit_text(response)
                 
         elif "статистика" in text.lower() or "stats" in text.lower():
             # Показываем расширенную статистику пользователя
+            thinking_msg = await update.message.reply_text("🤔 Думаю...")
             response = smart_tell.get_user_stats_summary(user_id)
-            await update.message.reply_text(response)
+            await thinking_msg.edit_text(response)
             
         elif "инсайты" in text.lower() or "insights" in text.lower():
             # Показываем быстрые инсайты
+            thinking_msg = await update.message.reply_text("🤔 Думаю...")
             response = smart_tell.get_quick_insights(user_id)
-            await update.message.reply_text(response)
+            await thinking_msg.edit_text(response)
             
         elif "напоминания" in text.lower() or "reminders" in text.lower():
             # Показываем активные напоминания
