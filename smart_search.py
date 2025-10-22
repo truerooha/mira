@@ -239,6 +239,34 @@ class SmartSearchEngine:
             logger.error(f"Ошибка поиска записей по тексту: {e}")
             return []
     
+    def search_entries_by_date(self, user_id: int, target_date: str, limit: int = 10) -> List[Dict]:
+        """Поиск записей по распознанной дате"""
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                query = """
+                    SELECT e.*, 
+                           GROUP_CONCAT(DISTINCT ent.name) as entity_names,
+                           GROUP_CONCAT(DISTINCT t.name) as tag_names
+                    FROM entries e
+                    LEFT JOIN entry_entities ee ON e.id = ee.entry_id
+                    LEFT JOIN entities ent ON ee.entity_id = ent.id
+                    LEFT JOIN entry_tags et ON e.id = et.entry_id
+                    LEFT JOIN tags t ON et.tag_id = t.id
+                    WHERE e.user_id = ? AND e.metadata LIKE ?
+                    GROUP BY e.id
+                    ORDER BY e.created_at DESC
+                    LIMIT ?
+                """
+                # Ищем по дате в формате YYYY-MM-DD
+                date_pattern = f'%{target_date}%'
+                cursor.execute(query, (user_id, date_pattern, limit))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка поиска по дате: {e}")
+            return []
+    
     def get_related_entities(self, user_id: int, entity_id: int) -> List[Dict]:
         """Получить связанные сущности"""
         try:
@@ -334,6 +362,19 @@ class SmartSearchEngine:
             general_entities = self.search_entities(user_id, parsed_query['general'])
             results['entities_found'].extend(general_entities)
             results['search_stats']['search_types_used'].append('entities_general')
+        
+        # НОВОЕ: Поиск по датам если запрос содержит временные указания
+        if parsed_result and parsed_result.get('entities'):
+            temporal_entities = [e for e in parsed_result['entities'] if e.get('type') == 'temporal']
+            if temporal_entities:
+                # Парсим дату из запроса
+                date_result = self.db.date_parser.parse_text(query)
+                if date_result['confidence'] > 0.5 and date_result['datetime']:
+                    target_date = date_result['date_string'][:10]  # YYYY-MM-DD
+                    date_entries = self.search_entries_by_date(user_id, target_date)
+                    results['entries_found'].extend(date_entries)
+                    results['search_stats']['search_types_used'].append('date_search')
+                    logger.info(f"📅 Поиск по дате {target_date}: найдено {len(date_entries)} записей")
         
         # Убираем дубликаты сущностей
         seen_entities = set()

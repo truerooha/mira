@@ -109,6 +109,8 @@ class AIQueryParser:
 - Запросы типа "где менял" = location_search + action
 - Измерения (вес, давление) = measurement
 - Действия (менял, починил) = action
+- Временные запросы "кого встретил сегодня/вчера" = temporal + person
+- Запросы "что было сегодня/вчера" = temporal_analysis
 
 ФОРМАТ ОТВЕТА (строго JSON):
 {{
