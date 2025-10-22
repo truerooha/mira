@@ -75,23 +75,17 @@ class SmartTellEngine:
         # Извлекаем тему из запроса
         topic = self._extract_topic(query)
         
-        # Выбираем случайный заботливый ответ
-        response_template = random.choice(self.simple_responses['no_data'])
-        
-        if topic:
-            response = response_template.replace("об этом", f"о {topic}")
-        else:
-            response = response_template
-        
-        # Добавляем предложение
-        suggestions = [
-            "Расскажи мне что-нибудь об этом!",
-            "Поделись историей!",
-            "Что бы ты хотел, чтобы я запомнила?"
+        # Нейтральные ответы
+        no_data_responses = [
+            "Информации не найдено.",
+            "Данных пока нет.",
+            "Записей не обнаружено.",
+            "Информация отсутствует."
         ]
-        suggestion = random.choice(suggestions)
         
-        return f"💕 {response}\n\n💡 {suggestion}"
+        response = random.choice(no_data_responses)
+        
+        return response
     
     def _generate_simple_data_response(self, query: str, search_results: Dict) -> str:
         """Генерирует простой ответ с найденными данными"""
@@ -102,44 +96,24 @@ class SmartTellEngine:
         
         # Заголовок
         if topic:
-            header = f"📚 Вот что я знаю о {topic}:"
+            header = f"Найдена информация о {topic}:"
         else:
-            header = random.choice(self.simple_responses['found_data'])
+            header = "Найдена информация:"
         response_parts.append(header)
-        
-        # Сущности
-        if search_results['entities_found']:
-            entities = [e['name'] for e in search_results['entities_found'][:3]]
-            response_parts.append(f"\n🏷️ Сущности: {', '.join(entities)}")
         
         # Записи
         if search_results['entries_found']:
-            response_parts.append("\n📝 Записи:")
             for i, entry in enumerate(search_results['entries_found'][:3], 1):
                 text = entry['original_text']
                 if len(text) > 80:
                     text = text[:80] + "..."
                 response_parts.append(f"{i}. {text}")
         
-        # Связанная информация
-        if search_results['related_entities']:
-            related = [e['name'] for e in search_results['related_entities'][:2]]
-            response_parts.append(f"\n🔗 Связанное: {', '.join(related)}")
-        
-        # Статистика
-        total_entries = search_results['search_stats']['total_entries']
-        if total_entries > 3:
-            response_parts.append(f"\n📊 Всего найдено {total_entries} записей")
-        
-        # Предложение
-        suggestions = [
-            "Хочешь узнать больше деталей?",
-            "Расскажи что-то новое об этом!",
-            "Есть еще вопросы?"
-        ]
-        import random
-        suggestion = random.choice(suggestions)
-        response_parts.append(f"\n💡 {suggestion}")
+        # Убираем все дополнительные элементы:
+        # - Не показываем сущности отдельно
+        # - Не показываем связанную информацию
+        # - Не показываем статистику
+        # - Не добавляем предложения
         
         return "\n".join(response_parts)
     
