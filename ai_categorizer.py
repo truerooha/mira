@@ -187,11 +187,14 @@ class AICategorizer:
         if "confidence" not in result:
             result["confidence"] = 0.5
         
-        # Добавляем контекст к сущностям
+        # Добавляем контекст к сущностям и нормализуем имена
         for entity in result["entities"]:
             entity["context"] = original_text
             if "confidence" not in entity:
                 entity["confidence"] = 0.7
+            # Нормализуем имя сущности в нижний регистр
+            if "name" in entity:
+                entity["name"] = entity["name"].lower().strip()
         
         return result
     

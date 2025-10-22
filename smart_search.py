@@ -55,7 +55,25 @@ class SmartSearchEngine:
             'работе': 'работа', 'работу': 'работа', 'работы': 'работа',
             'встречах': 'встреча', 'встречи': 'встреча', 'встречу': 'встреча',
             'молоке': 'молоко', 'молока': 'молоко', 'молоко': 'молоко',
-            'напоминания': 'напоминание', 'напоминаний': 'напоминание'
+            'напоминания': 'напоминание', 'напоминаний': 'напоминание',
+            'ваби': 'ваби саби', 'саби': 'ваби саби'  # Нормализация для составных названий
+        }
+        
+        # Обратный словарь для поиска всех форм слова
+        self.reverse_normalization = {}
+        for form, base in self.word_normalization.items():
+            if base not in self.reverse_normalization:
+                self.reverse_normalization[base] = []
+            self.reverse_normalization[base].append(form)
+            self.reverse_normalization[base].append(base)  # Добавляем и базовую форму
+        
+        # Составные названия, которые нужно искать как единое целое
+        self.compound_names = {
+            'ваби саби': ['ваби', 'саби'],
+            'раки ролл': ['раки', 'ролл'],
+            'хаджи мамсурова': ['хаджи', 'мамсурова'],
+            'колка кисаева': ['колка', 'кисаева'],
+            'влад тотиев': ['влад', 'тотиев']
         }
         
         # Стоп-слова для фильтрации
@@ -81,6 +99,17 @@ class SmartSearchEngine:
             'general': []
         }
         
+        # Сначала проверяем составные названия
+        compound_found = []
+        for compound_name, parts in self.compound_names.items():
+            if all(part in query_lower for part in parts):
+                # Проверяем, что части идут подряд или близко друг к другу
+                compound_pattern = r'\b' + r'\s+'.join(parts) + r'\b'
+                if re.search(compound_pattern, query_lower):
+                    compound_found.append(compound_name)
+                    # Добавляем составное название в общие ключевые слова
+                    extracted['general'].append(compound_name)
+        
         # Извлекаем ключевые слова по типам
         for entity_type, patterns in self.query_patterns.items():
             for pattern in patterns:
@@ -91,7 +120,9 @@ class SmartSearchEngine:
                     if match and len(match) > 2 and match not in self.stop_words:
                         # Нормализуем слово
                         normalized_word = self.word_normalization.get(match, match)
-                        extracted[entity_type].append(normalized_word)
+                        # Если это часть составного названия, которое уже найдено, пропускаем
+                        if not any(part in match for compound in compound_found for part in self.compound_names[compound]):
+                            extracted[entity_type].append(normalized_word)
         
         # Извлекаем общие ключевые слова
         words = re.findall(r'\b\w+\b', query_lower)
@@ -101,7 +132,9 @@ class SmartSearchEngine:
                 not any(word in extracted[entity_type] for entity_type in extracted if entity_type != 'general')):
                 # Нормализуем слово
                 normalized_word = self.word_normalization.get(word, word)
-                extracted['general'].append(normalized_word)
+                # Если это часть составного названия, которое уже найдено, пропускаем
+                if not any(part in word for compound in compound_found for part in self.compound_names[compound]):
+                    extracted['general'].append(normalized_word)
         
         # Убираем дубликаты
         for entity_type in extracted:
@@ -134,38 +167,96 @@ class SmartSearchEngine:
             with self.db.get_connection() as conn:
                 cursor = conn.cursor()
                 
+                # Создаем условия поиска с приоритетом точных совпадений
+                search_conditions = []
+                params = []
+                
+                for kw in keywords:
+                    # Нормализуем ключевое слово в нижний регистр
+                    normalized_kw = kw.lower().strip()
+                    
+                    # Получаем все возможные формы слова для поиска
+                    search_forms = [normalized_kw]
+                    
+                    # Добавляем нормализованную форму
+                    if normalized_kw in self.word_normalization:
+                        search_forms.append(self.word_normalization[normalized_kw])
+                    
+                    # Добавляем все формы из обратного словаря
+                    for base_form, all_forms in self.reverse_normalization.items():
+                        if normalized_kw in all_forms:
+                            search_forms.extend(all_forms)
+                    
+                    # Убираем дубликаты
+                    search_forms = list(set(search_forms))
+                    
+                    # Создаем условия поиска для всех форм
+                    for form in search_forms:
+                        # Точное совпадение (высший приоритет)
+                        search_conditions.append("name = ?")
+                        params.append(form)
+                        
+                        # Начинается с формы
+                        search_conditions.append("name LIKE ?")
+                        params.append(f"{form}%")
+                        
+                        # Содержит форму
+                        search_conditions.append("name LIKE ?")
+                        params.append(f"%{form}%")
+                    
+                    # Для составных названий - ищем каждое слово отдельно
+                    if ' ' in normalized_kw:
+                        words = normalized_kw.split()
+                        for word in words:
+                            search_conditions.append("name LIKE ?")
+                            params.append(f"%{word}%")
+                            # Также ищем нормализованные формы
+                            if word in self.word_normalization:
+                                normalized_word = self.word_normalization[word]
+                                search_conditions.append("name LIKE ?")
+                                params.append(f"%{normalized_word}%")
+                
+                # Объединяем условия
+                where_condition = " OR ".join(search_conditions)
+                
                 if entity_type:
                     # Поиск по конкретному типу сущности
-                    placeholders = ' OR '.join(['LOWER(name) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?)' for _ in keywords])
                     query = f"""
-                        SELECT DISTINCT e.*, COUNT(ee.entry_id) as mention_count
+                        SELECT DISTINCT e.*, COUNT(ee.entry_id) as mention_count,
+                               CASE 
+                                   WHEN e.name = ? THEN 3
+                                   WHEN e.name LIKE ? THEN 2
+                                   ELSE 1
+                               END as match_priority
                         FROM entities e
                         LEFT JOIN entry_entities ee ON e.id = ee.entity_id
-                        WHERE e.user_id = ? AND e.type = ? AND ({placeholders})
+                        WHERE e.user_id = ? AND e.type = ? AND ({where_condition})
                         GROUP BY e.id
-                        ORDER BY mention_count DESC, e.name
+                        ORDER BY match_priority DESC, mention_count DESC, e.name
                     """
-                    # Добавляем поиск как по точному совпадению, так и по частичному
-                    params = [user_id, entity_type]
-                    for kw in keywords:
-                        params.extend([f'%{kw}%', f'{kw}%'])  # Частичное и начинающееся с
+                    # Добавляем параметры для приоритета (используем первый ключевой элемент)
+                    priority_params = [keywords[0].lower().strip(), f"{keywords[0].lower().strip()}%"] if keywords else ["", ""]
+                    final_params = priority_params + [user_id, entity_type] + params
                 else:
                     # Поиск по всем типам
-                    placeholders = ' OR '.join(['LOWER(name) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?)' for _ in keywords])
                     query = f"""
-                        SELECT DISTINCT e.*, COUNT(ee.entry_id) as mention_count
+                        SELECT DISTINCT e.*, COUNT(ee.entry_id) as mention_count,
+                               CASE 
+                                   WHEN e.name = ? THEN 3
+                                   WHEN e.name LIKE ? THEN 2
+                                   ELSE 1
+                               END as match_priority
                         FROM entities e
                         LEFT JOIN entry_entities ee ON e.id = ee.entity_id
-                        WHERE e.user_id = ? AND ({placeholders})
+                        WHERE e.user_id = ? AND ({where_condition})
                         GROUP BY e.id
-                        ORDER BY mention_count DESC, e.name
+                        ORDER BY match_priority DESC, mention_count DESC, e.name
                     """
-                    # Добавляем поиск как по точному совпадению, так и по частичному
-                    params = [user_id]
-                    for kw in keywords:
-                        params.extend([f'%{kw}%', f'{kw}%'])  # Частичное и начинающееся с
+                    # Добавляем параметры для приоритета (используем первый ключевой элемент)
+                    priority_params = [keywords[0].lower().strip(), f"{keywords[0].lower().strip()}%"] if keywords else ["", ""]
+                    final_params = priority_params + [user_id] + params
                 
-                cursor.execute(query, params)
+                cursor.execute(query, final_params)
                 rows = cursor.fetchall()
                 return [dict(row) for row in rows]
                 
@@ -207,14 +298,16 @@ class SmartSearchEngine:
             return []
     
     def search_entries_by_text(self, user_id: int, keywords: List[str], limit: int = 10) -> List[Dict]:
-        """Поиск записей по тексту"""
+        """Поиск записей по тексту (нормализованный в нижний регистр)"""
         if not keywords:
             return []
         
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.cursor()
-                placeholders = ' OR '.join(['LOWER(original_text) LIKE LOWER(?)' for _ in keywords])
+                # Нормализуем ключевые слова в нижний регистр
+                normalized_keywords = [kw.lower().strip() for kw in keywords]
+                placeholders = ' OR '.join(['original_text LIKE ?' for _ in normalized_keywords])
                 query = f"""
                     SELECT e.*, 
                            GROUP_CONCAT(DISTINCT ent.name) as entity_names,
@@ -229,7 +322,7 @@ class SmartSearchEngine:
                     ORDER BY e.created_at DESC
                     LIMIT ?
                 """
-                params = [user_id] + [f'%{kw}%' for kw in keywords] + [limit]
+                params = [user_id] + [f'%{kw}%' for kw in normalized_keywords] + [limit]
                 
                 cursor.execute(query, params)
                 rows = cursor.fetchall()

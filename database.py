@@ -138,21 +138,24 @@ class DatabaseManager:
     
     def add_entity(self, user_id: int, name: str, entity_type: str, 
                    attributes: Dict = None) -> int:
-        """Добавить сущность"""
+        """Добавить сущность (нормализованную в нижний регистр)"""
         try:
+            # Нормализуем имя сущности в нижний регистр
+            normalized_name = name.lower().strip()
+            
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT OR IGNORE INTO entities (user_id, name, type, attributes)
                     VALUES (?, ?, ?, ?)
-                """, (user_id, name, entity_type, 
+                """, (user_id, normalized_name, entity_type, 
                       json.dumps(attributes) if attributes else None))
                 
                 # Получаем ID существующей или новой записи
                 cursor.execute("""
                     SELECT id FROM entities 
                     WHERE user_id = ? AND name = ? AND type = ?
-                """, (user_id, name, entity_type))
+                """, (user_id, normalized_name, entity_type))
                 
                 result = cursor.fetchone()
                 entity_id = result['id'] if result else cursor.lastrowid
@@ -211,20 +214,23 @@ class DatabaseManager:
     # === МЕТОДЫ ДЛЯ РАБОТЫ С ТЕГАМИ ===
     
     def add_tag(self, user_id: int, name: str, color: str = None) -> int:
-        """Добавить тег"""
+        """Добавить тег (нормализованный в нижний регистр)"""
         try:
+            # Нормализуем имя тега в нижний регистр
+            normalized_name = name.lower().strip()
+            
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT OR IGNORE INTO tags (user_id, name, color)
                     VALUES (?, ?, ?)
-                """, (user_id, name, color))
+                """, (user_id, normalized_name, color))
                 
                 # Получаем ID существующего или нового тега
                 cursor.execute("""
                     SELECT id FROM tags 
                     WHERE user_id = ? AND name = ?
-                """, (user_id, name))
+                """, (user_id, normalized_name))
                 
                 result = cursor.fetchone()
                 tag_id = result['id'] if result else cursor.lastrowid

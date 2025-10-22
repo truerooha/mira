@@ -111,15 +111,15 @@ class CategorizationEngine:
                 
                 for match in matches:
                     if template["extract_name"]:
-                        # Извлекаем имя сущности из группы
-                        entity_name = match.group(1).strip()
+                        # Извлекаем имя сущности из группы и нормализуем в нижний регистр
+                        entity_name = match.group(1).strip().lower()
                         if len(match.groups()) > 1:
                             # Если есть дополнительная информация
-                            additional_info = match.group(2).strip()
+                            additional_info = match.group(2).strip().lower()
                             entity_name = f"{entity_name} {additional_info}"
                     else:
-                        # Для напоминаний берем весь текст
-                        entity_name = match.group(0).strip()
+                        # Для напоминаний берем весь текст и нормализуем в нижний регистр
+                        entity_name = match.group(0).strip().lower()
                     
                     # Создаем сущность
                     entity = {
