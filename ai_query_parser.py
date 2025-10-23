@@ -321,6 +321,51 @@ class AIQueryParser:
         intent = parsed_result.get("intent", "search")
         analytical_type = parsed_result.get("analytical_type")
         return intent in ["temporal_analysis", "grouping", "location_search"] or analytical_type is not None
+    
+    async def generate_related_tag_keywords(self, query: str, main_keywords: List[str]) -> List[str]:
+        """Генерирует связанные ключевые слова для поиска по тегам"""
+        try:
+            system_prompt = """Ты - эксперт по поиску и категоризации информации. 
+Твоя задача - сгенерировать связанные ключевые слова для поиска по тегам.
+
+Правила:
+1. Анализируй основной запрос и ключевые слова
+2. Генерируй связанные слова, которые могут быть в тегах
+3. Учитывай синонимы, родственные понятия, контекст
+4. Включай как точные совпадения, так и связанные термины
+5. Максимум 10 ключевых слов
+6. Отвечай ТОЛЬКО списком слов через запятую
+
+Примеры:
+- Запрос: "мой вес" → вес,здоровье,фигура,масса,взвешивание,параметры,измерения
+- Запрос: "работа" → работа,карьера,офис,проект,задача,дело,бизнес
+- Запрос: "машина" → машина,авто,автомобиль,транспорт,ремонт,сервис"""
+
+            response = await self.client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Запрос: '{query}'\nКлючевые слова: {', '.join(main_keywords)}\n\nСгенерируй связанные ключевые слова для поиска по тегам:"}
+                ],
+                temperature=0.3,
+                max_tokens=200
+            )
+            
+            content = response.choices[0].message.content.strip()
+            
+            # Парсим список ключевых слов
+            keywords = [kw.strip().lower() for kw in content.split(',') if kw.strip()]
+            
+            # Добавляем исходные ключевые слова
+            all_keywords = list(set(main_keywords + keywords))
+            
+            logger.info(f"AI сгенерировал {len(keywords)} связанных ключевых слов для '{query}': {keywords}")
+            return all_keywords
+            
+        except Exception as e:
+            logger.error(f"Ошибка генерации связанных ключевых слов: {e}")
+            # Fallback на исходные ключевые слова
+            return main_keywords
 
 # Пример использования
 async def test_ai_parser():

@@ -22,6 +22,11 @@ class SmartSearchEngine:
         
         # Паттерны для извлечения ключевых слов из запроса
         self.query_patterns = {
+            'health': [
+                r'\bздоровье\b', r'\bздоров\b', r'\bздоровый\b', r'\bздоровая\b', r'\bздоровое\b',
+                r'\bвес\b', r'\bвесил\b', r'\bвесила\b', r'\bвесе\b', r'\bвеса\b', r'\bвесом\b', r'\bвесу\b',
+                r'\bпараметры\b', r'\bпоказатели\b', r'\bизмерения\b', r'\bданные\b'
+            ],
             'person': [
                 r'о\s+(\w+)', r'про\s+(\w+)', r'(\w+)\s+кто', r'кто\s+такой\s+(\w+)',
                 r'(\w+)\s+что', r'что\s+знаешь\s+о\s+(\w+)', r'(\w+)\s+расскажи'
@@ -90,6 +95,7 @@ class SmartSearchEngine:
         """Парсит запрос пользователя и извлекает ключевые слова"""
         query_lower = query.lower().strip()
         extracted = {
+            'health': [],
             'person': [],
             'place': [],
             'object': [],
@@ -332,6 +338,64 @@ class SmartSearchEngine:
             logger.error(f"Ошибка поиска записей по тексту: {e}")
             return []
     
+    async def search_entries_by_tags(self, user_id: int, tag_keywords: List[str], original_query: str = "", limit: int = 10) -> List[Dict]:
+        """Поиск записей по тегам с AI-генерацией связанных ключевых слов"""
+        if not tag_keywords:
+            return []
+        
+        try:
+            # Генерируем связанные ключевые слова с помощью AI
+            if self.ai_parser and original_query:
+                try:
+                    enhanced_keywords = await self.ai_parser.generate_related_tag_keywords(original_query, tag_keywords)
+                    logger.info(f"AI расширил ключевые слова: {tag_keywords} → {enhanced_keywords}")
+                    tag_keywords = enhanced_keywords
+                except Exception as e:
+                    logger.error(f"Ошибка AI генерации ключевых слов: {e}")
+                    # Продолжаем с исходными ключевыми словами
+            
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Нормализуем ключевые слова тегов
+                normalized_keywords = [kw.lower().strip() for kw in tag_keywords]
+                
+                # Создаем условия поиска для тегов
+                tag_conditions = []
+                tag_params = []
+                
+                for kw in normalized_keywords:
+                    # Убираем # если есть
+                    clean_kw = kw.replace('#', '')
+                    tag_conditions.append("t.name LIKE ?")
+                    tag_params.append(f'%{clean_kw}%')
+                
+                where_condition = " OR ".join(tag_conditions)
+                
+                query = f"""
+                    SELECT DISTINCT e.*, 
+                           GROUP_CONCAT(DISTINCT t.name) as tag_names,
+                           GROUP_CONCAT(DISTINCT ent.name) as entity_names
+                    FROM entries e
+                    JOIN entry_tags et ON e.id = et.entry_id
+                    JOIN tags t ON et.tag_id = t.id
+                    LEFT JOIN entry_entities ee ON e.id = ee.entry_id
+                    LEFT JOIN entities ent ON ee.entity_id = ent.id
+                    WHERE e.user_id = ? AND ({where_condition})
+                    GROUP BY e.id
+                    ORDER BY e.created_at DESC
+                    LIMIT ?
+                """
+                
+                params = [user_id] + tag_params + [limit]
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+                
+        except Exception as e:
+            logger.error(f"Ошибка поиска записей по тегам: {e}")
+            return []
+
     def search_entries_by_date(self, user_id: int, target_date: str, limit: int = 10) -> List[Dict]:
         """Поиск записей по распознанной дате"""
         try:
@@ -468,6 +532,21 @@ class SmartSearchEngine:
                     results['entries_found'].extend(date_entries)
                     results['search_stats']['search_types_used'].append('date_search')
                     logger.info(f"📅 Поиск по дате {target_date}: найдено {len(date_entries)} записей")
+        
+        # НОВОЕ: Поиск по тегам
+        tag_keywords = []
+        for keywords in parsed_query.values():
+            tag_keywords.extend(keywords)
+        
+        if tag_keywords:
+            tag_entries = await self.search_entries_by_tags(user_id, tag_keywords, query)
+            # Добавляем только новые записи
+            existing_entry_ids = {e['id'] for e in results['entries_found']}
+            for entry in tag_entries:
+                if entry['id'] not in existing_entry_ids:
+                    results['entries_found'].append(entry)
+            results['search_stats']['search_types_used'].append('tag_search')
+            logger.info(f"🏷️ Поиск по тегам: найдено {len(tag_entries)} записей")
         
         # Убираем дубликаты сущностей
         seen_entities = set()
