@@ -60,6 +60,22 @@ def postprocess_transcript(transcript: str) -> str:
     
     return transcript
 
+def cleanup_audio_files(ogg_path: Path, wav_path: Path) -> None:
+    """Удаляет аудиофайлы после успешного распознавания речи"""
+    try:
+        # Удаляем .ogg файл
+        if ogg_path.exists():
+            ogg_path.unlink()
+            logger.info(f"Удален аудиофайл: {ogg_path}")
+        
+        # Удаляем .wav файл
+        if wav_path.exists():
+            wav_path.unlink()
+            logger.info(f"Удален аудиофайл: {wav_path}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при удалении аудиофайлов: {e}")
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает текстовые сообщения с помощью AI-классификатора намерений"""
     text = update.message.text.strip()
@@ -252,16 +268,22 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 topic = intent_info.get("topic", processed_text)
                 response = await smart_tell.process_tell_request(user_id, topic)
                 await thinking_msg.edit_text(response)
+                # Удаляем аудиофайлы после успешной обработки
+                cleanup_audio_files(ogg_path, wav_path)
                 
             elif intent_type == IntentType.SHOW_STATS:
                 # Показать статистику
                 response = smart_tell.get_user_stats_summary(user_id)
                 await thinking_msg.edit_text(response)
+                # Удаляем аудиофайлы после успешной обработки
+                cleanup_audio_files(ogg_path, wav_path)
                 
             elif intent_type == IntentType.SHOW_INSIGHTS:
                 # Показать инсайты
                 response = smart_tell.get_quick_insights(user_id)
                 await thinking_msg.edit_text(response)
+                # Удаляем аудиофайлы после успешной обработки
+                cleanup_audio_files(ogg_path, wav_path)
                 
             elif intent_type == IntentType.SHOW_REMINDERS:
                 # Показать напоминания
@@ -276,6 +298,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     response = "⏰ У тебя нет активных напоминаний"
                 await thinking_msg.edit_text(response)
+                # Удаляем аудиофайлы после успешной обработки
+                cleanup_audio_files(ogg_path, wav_path)
                 
             else:  # IntentType.SAVE_INFO или IntentType.UNKNOWN
                 # Сохраняем информацию
@@ -359,11 +383,18 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Обновляем сообщение
                 await thinking_msg.edit_text(response)
                 
+                # Удаляем аудиофайлы после успешной обработки
+                cleanup_audio_files(ogg_path, wav_path)
+                
         except Exception as e:
             logger.error(f"Ошибка обработки аудио сообщения: {e}")
             await thinking_msg.edit_text("❌ Произошла ошибка при обработке сообщения. Попробуй еще раз!")
+            # Удаляем аудиофайлы даже при ошибке обработки
+            cleanup_audio_files(ogg_path, wav_path)
     else:
         await update.message.reply_text("❌ Ошибка распознавания речи")
+        # Удаляем аудиофайлы при ошибке распознавания
+        cleanup_audio_files(ogg_path, wav_path)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
