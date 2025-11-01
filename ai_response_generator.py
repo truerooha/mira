@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import openai
 from openai import AsyncOpenAI
 import logging
+from date_formatter import SmartDateFormatter
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class AIResponseGenerator:
             api_key=api_key,
             base_url=base_url
         )
+        self.date_formatter = SmartDateFormatter()
         
         # Шаблоны для разных типов ответов
         self.response_templates = {
@@ -89,6 +91,12 @@ class AIResponseGenerator:
 - Для поиска локаций - выделяй места
 - Извлекай числа, даты, суммы когда возможно
 
+ВАЖНО О ДАТАХ:
+- Записи содержат человечные временные выражения (например, "Вчера", "На прошлой неделе")
+- Используй эти выражения ДО текста записи
+- НЕ дублируй дату, если она уже есть в начале записи
+- НЕ меняй формат временных выражений на технические даты
+
 ФОРМАТ ОТВЕТА (строго JSON):
 {
     "response": "основной ответ пользователю",
@@ -122,7 +130,13 @@ class AIResponseGenerator:
             for entry in search_results['entries_found'][:3]:  # Топ-3 записи
                 # Обрезаем длинный текст
                 text = entry['original_text'][:100] + "..." if len(entry['original_text']) > 100 else entry['original_text']
-                entries_text.append(f'"{text}"')
+                
+                # Добавляем человечную дату
+                human_date = self.date_formatter.format_entry_date(entry)
+                if human_date:
+                    entries_text.append(f'"{human_date} {text}"')
+                else:
+                    entries_text.append(f'"{text}"')
             data_summary.append(f"Записи: {'; '.join(entries_text)}")
         
         if search_results['related_entities']:
@@ -133,7 +147,13 @@ class AIResponseGenerator:
             recent_text = []
             for entry in search_results['recent_entries'][:2]:
                 text = entry['original_text'][:80] + "..." if len(entry['original_text']) > 80 else entry['original_text']
-                recent_text.append(f'"{text}"')
+                
+                # Добавляем человечную дату
+                human_date = self.date_formatter.format_entry_date(entry)
+                if human_date:
+                    recent_text.append(f'"{human_date} {text}"')
+                else:
+                    recent_text.append(f'"{text}"')
             data_summary.append(f"Недавние записи: {'; '.join(recent_text)}")
         
         return "\n".join(data_summary)
