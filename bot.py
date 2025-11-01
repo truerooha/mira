@@ -12,6 +12,7 @@ from categorization import CategorizationEngine
 from ai_categorizer import AICategorizer
 from smart_tell import SmartTellEngine
 from intent_classifier import IntentClassifier, IntentType
+from greeting_response_agent import GreetingResponseAgent
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,7 @@ categorizer = CategorizationEngine()
 ai_categorizer = AICategorizer(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
 smart_tell = SmartTellEngine(db, DEEPSEEK_API_KEY)
 intent_classifier = IntentClassifier(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
+greeting_agent = GreetingResponseAgent(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
 
 def postprocess_transcript(transcript: str) -> str:
     """Постобработка транскрипта для восстановления вопросительных знаков"""
@@ -123,6 +125,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     response += "\n"
             else:
                 response = "⏰ У тебя нет активных напоминаний"
+            await thinking_msg.edit_text(response)
+            
+        elif intent_type == IntentType.GREETING:
+            # Приветствие или бессмысленное сообщение - НЕ сохраняем в базу
+            greeting_type = intent_info.get("greeting_type", "hello")
+            if greeting_agent:
+                response = await greeting_agent.generate_response(text, greeting_type)
+            else:
+                # Fallback ответы
+                if greeting_type == "check_presence":
+                    response = "Да, я тут, что-то запомнить?"
+                elif greeting_type == "nonsense":
+                    response = "Извини, не совсем поняла. Повтори, пожалуйста?"
+                else:
+                    response = "Привет! Я тебя слушаю :)"
             await thinking_msg.edit_text(response)
             
         else:  # IntentType.SAVE_INFO или IntentType.UNKNOWN
@@ -297,6 +314,23 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         response += "\n"
                 else:
                     response = "⏰ У тебя нет активных напоминаний"
+                await thinking_msg.edit_text(response)
+                # Удаляем аудиофайлы после успешной обработки
+                cleanup_audio_files(ogg_path, wav_path)
+                
+            elif intent_type == IntentType.GREETING:
+                # Приветствие или бессмысленное сообщение - НЕ сохраняем в базу
+                greeting_type = intent_info.get("greeting_type", "hello")
+                if greeting_agent:
+                    response = await greeting_agent.generate_response(processed_text, greeting_type)
+                else:
+                    # Fallback ответы
+                    if greeting_type == "check_presence":
+                        response = "Да, я тут, что-то запомнить?"
+                    elif greeting_type == "nonsense":
+                        response = "Извини, не совсем поняла. Повтори, пожалуйста?"
+                    else:
+                        response = "Привет! Я тебя слушаю :)"
                 await thinking_msg.edit_text(response)
                 # Удаляем аудиофайлы после успешной обработки
                 cleanup_audio_files(ogg_path, wav_path)
