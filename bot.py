@@ -13,6 +13,14 @@ from ai_categorizer import AICategorizer
 from smart_tell import SmartTellEngine
 from intent_classifier import IntentClassifier, IntentType
 from greeting_response_agent import GreetingResponseAgent
+from openai import OpenAI
+try:
+    # Исключения SDK для точной диагностики
+    from openai import APIConnectionError, APIStatusError, RateLimitError
+except Exception:
+    APIConnectionError = Exception
+    APIStatusError = Exception
+    RateLimitError = Exception
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -24,17 +32,24 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WHISPER_PATH = os.getenv("WHISPER_PATH")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPEN_API_KEY")
 
-TRANSCRIPTS_DIR = Path("transcripts")
-TRANSCRIPTS_DIR.mkdir(exist_ok=True)
+# Пути данных
+BASE_DATA_DIR = Path("data")
+TRANSCRIPTS_DIR = BASE_DATA_DIR / "transcripts"
+TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Инициализируем базу данных и движки категоризации
-db = DatabaseManager("mira_brain.db")
+db = DatabaseManager(str(BASE_DATA_DIR / "mira_brain.db"))
 categorizer = CategorizationEngine()
 ai_categorizer = AICategorizer(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
 smart_tell = SmartTellEngine(db, DEEPSEEK_API_KEY)
 intent_classifier = IntentClassifier(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
 greeting_agent = GreetingResponseAgent(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
+openai_client = None
+if OPENAI_API_KEY:
+    # Добавляем таймаут и ограниченное число ретраев на случай временных сетевых сбоев
+    openai_client = OpenAI(api_key=OPENAI_API_KEY, timeout=60.0, max_retries=2)
 
 def postprocess_transcript(transcript: str) -> str:
     """Постобработка транскрипта для восстановления вопросительных знаков"""
@@ -243,7 +258,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_dir.mkdir(exist_ok=True)
     ogg_path = user_dir / f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.ogg"
     wav_path = ogg_path.with_suffix(".wav")
-    txt_path = ogg_path.with_suffix(".txt")
 
     # Скачиваем файл
     await file.download_to_drive(str(ogg_path))
@@ -252,23 +266,26 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subprocess.run(["ffmpeg", "-y", "-i", str(ogg_path), str(wav_path)],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # Распознаём через whisper.cpp
-    subprocess.run([WHISPER_PATH, "-m", WHISPER_MODEL, "-f", str(wav_path), "-otxt", "--language", "ru"])
-    # whisper.cpp создаёт .wav.txt, переименуем
-    generated_txt = str(wav_path) + ".txt"
-    if Path(generated_txt).exists():
-        Path(generated_txt).rename(txt_path)
-        
-        # Читаем расшифрованный текст
-        with open(txt_path, 'r', encoding='utf-8') as f:
-            text = f.read().strip()
-        
+    # Распознаём через OpenAI Whisper API
+    if not openai_client:
+        await update.message.reply_text("❌ Не настроен OPENAI_API_KEY/OPEN_API_KEY для Whisper API")
+        cleanup_audio_files(ogg_path, wav_path)
+        return
+
+    try:
+        with open(wav_path, "rb") as audio_file:
+            transcript_text = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"
+            )
+
         # Постобработка транскрипта для восстановления вопросительных знаков
-        processed_text = postprocess_transcript(text)
-        
+        processed_text = postprocess_transcript(transcript_text.strip())
+
         # Отправляем сообщение "Думаю..."
         thinking_msg = await update.message.reply_text("🤔 Думаю...")
-        
+
         try:
             # Классифицируем намерение пользователя
             if intent_classifier:
@@ -342,7 +359,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     user_id=user_id,
                     original_text=processed_text,
                     source_type='voice',
-                    audio_file_path=str(txt_path)
+                    audio_file_path=str(ogg_path)
                 )
                 
                 # Пытаемся использовать AI категоризацию
@@ -425,9 +442,22 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking_msg.edit_text("❌ Произошла ошибка при обработке сообщения. Попробуй еще раз!")
             # Удаляем аудиофайлы даже при ошибке обработки
             cleanup_audio_files(ogg_path, wav_path)
-    else:
-        await update.message.reply_text("❌ Ошибка распознавания речи")
-        # Удаляем аудиофайлы при ошибке распознавания
+
+    except APIConnectionError as e:
+        logger.error(f"Ошибка сетевого подключения к Whisper API: {e}")
+        await update.message.reply_text(
+            "❌ Нет подключения к Whisper API. Проверь интернет/прокси. "
+            "Если используешь прокси — задай переменные HTTP(S)_PROXY."
+        )
+    except RateLimitError as e:
+        logger.error(f"Превышен лимит Whisper API: {e}")
+        await update.message.reply_text("⏳ Превышен лимит Whisper API. Попробуй позже.")
+    except APIStatusError as e:
+        logger.error(f"Статусная ошибка Whisper API: {e}")
+        await update.message.reply_text("❌ Whisper API вернул ошибку. Попробуй позже.")
+    except Exception as e:
+        logger.error(f"Неизвестная ошибка распознавания через Whisper API: {e}")
+        await update.message.reply_text("❌ Ошибка распознавания речи через Whisper API")
         cleanup_audio_files(ogg_path, wav_path)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
