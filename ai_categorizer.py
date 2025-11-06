@@ -165,7 +165,6 @@ class AICategorizer:
             
             result = json.loads(content)
             
-            # Валидируем результат
             return self._validate_result(result, text)
             
         except json.JSONDecodeError as e:
