@@ -2,7 +2,8 @@
 # Персональный голосовой интеллект
 
 # Telegram Bot API (совместимо с Python 3.13)
-python-telegram-bot==21.6
+# Устанавливаем с поддержкой JobQueue
+python-telegram-bot[job-queue]==21.6
 
 # Работа с переменными окружения
 python-dotenv==1.0.0

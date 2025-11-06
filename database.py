@@ -263,13 +263,20 @@ class DatabaseManager:
                      trigger_condition: str = None, entry_id: int = None) -> int:
         """Добавить напоминание"""
         try:
+            # Сериализуем datetime в строку для SQLite
+            trigger_value = None
+            if trigger_date is not None:
+                if isinstance(trigger_date, datetime):
+                    trigger_value = trigger_date.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    trigger_value = str(trigger_date)
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO reminders (user_id, text, trigger_date, 
                                          trigger_condition, entry_id)
                     VALUES (?, ?, ?, ?, ?)
-                """, (user_id, text, trigger_date, trigger_condition, entry_id))
+                """, (user_id, text, trigger_value, trigger_condition, entry_id))
                 
                 reminder_id = cursor.lastrowid
                 conn.commit()
@@ -297,6 +304,74 @@ class DatabaseManager:
                 
         except Exception as e:
             logger.error(f"Ошибка получения напоминаний: {e}")
+            raise
+
+    def get_due_reminders(self, now_dt) -> List[Dict]:
+        """Вернуть активные напоминания, у которых trigger_date <= now."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT * FROM reminders
+                    WHERE status = 'active' AND trigger_date IS NOT NULL AND trigger_date <= ?
+                    ORDER BY trigger_date ASC
+                """, (now_dt,))
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения due-напоминаний: {e}")
+            raise
+
+    def get_future_active_reminders(self) -> List[Dict]:
+        """Вернуть активные напоминания с trigger_date > now для перепланирования на старте."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT * FROM reminders
+                    WHERE status = 'active' AND trigger_date IS NOT NULL AND trigger_date > CURRENT_TIMESTAMP
+                    ORDER BY trigger_date ASC
+                """)
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения будущих напоминаний: {e}")
+            raise
+
+    def mark_reminder_completed(self, reminder_id: int):
+        """Отметить напоминание как выполненное."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE reminders
+                    SET status = 'completed'
+                    WHERE id = ?
+                """, (reminder_id,))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Ошибка обновления статуса напоминания: {e}")
+            raise
+
+    def update_reminder_trigger_date(self, reminder_id: int, trigger_date):
+        """Обновить trigger_date (если вычислили позже)."""
+        try:
+            trigger_value = None
+            if trigger_date is not None:
+                if isinstance(trigger_date, datetime):
+                    trigger_value = trigger_date.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    trigger_value = str(trigger_date)
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE reminders
+                    SET trigger_date = ?
+                    WHERE id = ?
+                """, (trigger_value, reminder_id))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Ошибка обновления trigger_date: {e}")
             raise
     
     # === УТИЛИТЫ ===

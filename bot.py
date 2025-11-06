@@ -2,7 +2,7 @@ import os
 import subprocess
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
@@ -93,6 +93,105 @@ def cleanup_audio_files(ogg_path: Path, wav_path: Path) -> None:
     except Exception as e:
         logger.error(f"Ошибка при удалении аудиофайлов: {e}")
 
+import re
+
+def parse_reminder_datetime(text: str, date_parser):
+    """
+    Вычисляет точный datetime для напоминания из произвольной русской фразы.
+    Поддерживает: завтра/дни недели/абсолютные даты + время вида 'в 7 вечера', 'в 19:00', 'в 7', 'к 7 утра'.
+    """
+    t = text.lower()
+    base = date_parser.parse_text(t)
+    dt = base.get('datetime')
+
+    m = re.search(r"\bв\s*(\d{1,2})(?::(\d{2}))?\s*(утра|дня|вечера|ночи)?\b", t)
+    hour = None
+    minute = 0
+    tod = None
+    if m:
+        hour = int(m.group(1))
+        minute = int(m.group(2)) if m.group(2) else 0
+        tod = m.group(3)
+
+        if tod in ('вечера', 'ночи'):
+            if 1 <= hour <= 11:
+                hour += 12
+        elif tod in ('дня',):
+            if 1 <= hour <= 11:
+                hour += 12
+        else:
+            pass
+
+    if not dt:
+        if 'завтра' in t:
+            dt = datetime.now() + timedelta(days=1)
+        else:
+            dt = datetime.now()
+
+    if hour is not None:
+        dt = dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    else:
+        if base.get('time_info') == 'вечером':
+            dt = dt.replace(hour=19, minute=0, second=0, microsecond=0)
+        elif base.get('time_info') == 'утром':
+            dt = dt.replace(hour=9, minute=0, second=0, microsecond=0)
+        elif base.get('time_info') == 'днем':
+            dt = dt.replace(hour=13, minute=0, second=0, microsecond=0)
+        elif base.get('time_info') == 'ночью':
+            dt = dt.replace(hour=23, minute=0, second=0, microsecond=0)
+        else:
+            dt = dt.replace(hour=10, minute=0, second=0, microsecond=0)
+
+    return dt
+
+async def send_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data
+    user_id = data["user_id"]
+    reminder_id = data["reminder_id"]
+    text = data["text"]
+
+    try:
+        await context.bot.send_message(chat_id=user_id, text=f"⏰ Напоминание: {text}")
+        db.mark_reminder_completed(reminder_id)
+    except Exception as e:
+        logger.error(f"Ошибка отправки напоминания #{reminder_id} пользователю {user_id}: {e}")
+
+def schedule_reminder(job_queue, reminder_row: dict):
+    """
+    Планирует напоминание через job_queue по trigger_date.
+    """
+    if job_queue is None:
+        logger.warning("JobQueue не инициализирован, пропускаю планирование напоминания")
+        return
+    trigger = reminder_row.get("trigger_date")
+    if not trigger:
+        return
+    run_at = datetime.fromisoformat(trigger) if isinstance(trigger, str) else trigger
+    # Делаем datetime timezone-aware и приводим к таймзоне JobQueue
+    jq_tz = getattr(job_queue, 'timezone', None)
+    if jq_tz is None:
+        jq_tz = datetime.now().astimezone().tzinfo  # локальная таймзона
+    if run_at.tzinfo is None:
+        # считаем, что сохранено локальное время пользователя
+        local_tz = datetime.now().astimezone().tzinfo
+        run_at = run_at.replace(tzinfo=local_tz)
+    run_at = run_at.astimezone(jq_tz)
+    # Сравнение во временной зоне JobQueue
+    if run_at <= datetime.now(jq_tz):
+        logger.info(f"Пропускаю планирование прошедшего времени: {run_at.isoformat()}")
+        return
+    job_queue.run_once(
+        send_reminder_job,
+        when=run_at,
+        data={
+            "user_id": reminder_row["user_id"],
+            "reminder_id": reminder_row["id"],
+            "text": reminder_row["text"],
+        },
+        name=f"reminder_{reminder_row['id']}"
+    )
+    logger.info(f"Запланировано напоминание #{reminder_row['id']} на {run_at.isoformat()}")
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает текстовые сообщения с помощью AI-классификатора намерений"""
     text = update.message.text.strip()
@@ -159,13 +258,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         else:  # IntentType.SAVE_INFO или IntentType.UNKNOWN
             # Сохраняем информацию
-            await process_text_entry(update, text, user_id, thinking_msg)
+            await process_text_entry(update, context, text, user_id, thinking_msg)
             
     except Exception as e:
         logger.error(f"Ошибка обработки текстового сообщения: {e}")
         await thinking_msg.edit_text("❌ Произошла ошибка при обработке сообщения. Попробуй еще раз!")
 
-async def process_text_entry(update: Update, text: str, user_id: int, thinking_msg=None):
+async def process_text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, user_id: int, thinking_msg=None):
     """Обрабатывает текстовую запись как обычное сообщение для сохранения"""
     # Если сообщение не передано, создаем новое
     if thinking_msg is None:
@@ -220,16 +319,27 @@ async def process_text_entry(update: Update, text: str, user_id: int, thinking_m
         trigger_condition = None
         if categorization_result.get("temporal_info"):
             if isinstance(categorization_result["temporal_info"], dict):
-                trigger_condition = categorization_result["temporal_info"].get("value")
+                trigger_condition = categorization_result["temporal_info"].get("match") or categorization_result["temporal_info"].get("value")
             else:
                 trigger_condition = str(categorization_result["temporal_info"])
-        
-        db.add_reminder(
+
+        trigger_dt = parse_reminder_datetime(text, db.date_parser)
+
+        reminder_id = db.add_reminder(
             user_id=user_id,
             text=reminder_data["text"],
+            trigger_date=trigger_dt,
             trigger_condition=trigger_condition,
             entry_id=entry_id
         )
+
+        if trigger_dt:
+            schedule_reminder(context.job_queue, {
+                "id": reminder_id,
+                "user_id": user_id,
+                "text": reminder_data["text"],
+                "trigger_date": trigger_dt.isoformat()
+            })
     
     # Формируем ответ
     response = f"🧠 Запомнил! (запись #{entry_id})"
@@ -399,16 +509,27 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     trigger_condition = None
                     if categorization_result.get("temporal_info"):
                         if isinstance(categorization_result["temporal_info"], dict):
-                            trigger_condition = categorization_result["temporal_info"].get("value")
+                            trigger_condition = categorization_result["temporal_info"].get("match") or categorization_result["temporal_info"].get("value")
                         else:
                             trigger_condition = str(categorization_result["temporal_info"])
-                    
-                    db.add_reminder(
+
+                    trigger_dt = parse_reminder_datetime(processed_text, db.date_parser)
+
+                    reminder_id = db.add_reminder(
                         user_id=user_id,
                         text=reminder_data["text"],
+                        trigger_date=trigger_dt,
                         trigger_condition=trigger_condition,
                         entry_id=entry_id
                     )
+
+                    if trigger_dt:
+                        schedule_reminder(context.job_queue, {
+                            "id": reminder_id,
+                            "user_id": user_id,
+                            "text": reminder_data["text"],
+                            "trigger_date": trigger_dt.isoformat()
+                        })
                 
                 # Формируем ответ
                 response = f"🧠 Запомнил! (запись #{entry_id})"
@@ -480,6 +601,27 @@ def main():
     print("-" * 50)
     
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Гарантируем наличие JobQueue даже без extras-пакета
+    if getattr(app, 'job_queue', None) is None:
+        try:
+            from telegram.ext import JobQueue
+            jq = JobQueue()
+            jq.set_application(app)
+            jq.start()
+            app.job_queue = jq
+            logger.info("Инициализирован собственный JobQueue (fallback)")
+        except Exception as e:
+            logger.error(f"Не удалось инициализировать JobQueue: {e}")
+
+    # Перепланировать будущие активные напоминания
+    try:
+        future_reminders = db.get_future_active_reminders()
+        for r in future_reminders:
+            schedule_reminder(app.job_queue, r)
+        logger.info(f"Перепланировано напоминаний: {len(future_reminders)}")
+    except Exception as e:
+        logger.error(f"Ошибка перепланирования напоминаний на старте: {e}")
     app.add_handler(MessageHandler(filters.COMMAND & filters.Regex("^/start$"), start))
     app.add_handler(MessageHandler(filters.VOICE, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
