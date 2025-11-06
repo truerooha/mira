@@ -3,6 +3,10 @@ import subprocess
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 from pathlib import Path
 import shutil
 from telegram import Update
@@ -34,6 +38,15 @@ WHISPER_PATH = os.getenv("WHISPER_PATH")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPEN_API_KEY")
+
+# Настройка часового пояса пользователя/бота (важно для напоминаний)
+USER_TZ = os.getenv("USER_TZ")  # например, "Europe/Moscow"
+if USER_TZ and ZoneInfo:
+    USER_TZINFO = ZoneInfo(USER_TZ)
+else:
+    # Фолбек: локальная таймзона хоста
+    USER_TZINFO = datetime.now().astimezone().tzinfo
+logger.info(f"Использую часовой пояс: {USER_TZ or str(USER_TZINFO)}")
 
 # Пути данных/БД с поддержкой ENV для персистентности
 DB_PATH_ENV = os.getenv("DB_PATH")
@@ -137,9 +150,9 @@ def parse_reminder_datetime(text: str, date_parser):
 
     if not dt:
         if 'завтра' in t:
-            dt = datetime.now() + timedelta(days=1)
+            dt = datetime.now(USER_TZINFO) + timedelta(days=1)
         else:
-            dt = datetime.now()
+            dt = datetime.now(USER_TZINFO)
 
     if hour is not None:
         dt = dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -183,11 +196,10 @@ def schedule_reminder(job_queue, reminder_row: dict):
     # Делаем datetime timezone-aware и приводим к таймзоне JobQueue
     jq_tz = getattr(job_queue, 'timezone', None)
     if jq_tz is None:
-        jq_tz = datetime.now().astimezone().tzinfo  # локальная таймзона
+        jq_tz = USER_TZINFO
     if run_at.tzinfo is None:
         # считаем, что сохранено локальное время пользователя
-        local_tz = datetime.now().astimezone().tzinfo
-        run_at = run_at.replace(tzinfo=local_tz)
+        run_at = run_at.replace(tzinfo=USER_TZINFO)
     run_at = run_at.astimezone(jq_tz)
     # Сравнение во временной зоне JobQueue
     if run_at <= datetime.now(jq_tz):
@@ -619,7 +631,7 @@ def main():
     if getattr(app, 'job_queue', None) is None:
         try:
             from telegram.ext import JobQueue
-            jq = JobQueue()
+            jq = JobQueue(timezone=USER_TZINFO)
             jq.set_application(app)
             jq.start()
             app.job_queue = jq
