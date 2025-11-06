@@ -4,9 +4,10 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 try:
-    from zoneinfo import ZoneInfo
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 except Exception:
     ZoneInfo = None
+    ZoneInfoNotFoundError = Exception
 from pathlib import Path
 import shutil
 from telegram import Update
@@ -40,12 +41,43 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPEN_API_KEY")
 
 # Настройка часового пояса пользователя/бота (важно для напоминаний)
-USER_TZ = os.getenv("USER_TZ")  # например, "Europe/Moscow"
-if USER_TZ and ZoneInfo:
-    USER_TZINFO = ZoneInfo(USER_TZ)
-else:
-    # Фолбек: локальная таймзона хоста
-    USER_TZINFO = datetime.now().astimezone().tzinfo
+USER_TZ = os.getenv("USER_TZ")  # например, "Europe/Moscow" или упрощённо "Moscow"
+
+def _resolve_user_tz(user_tz_value: str):
+    if not ZoneInfo:
+        return datetime.now().astimezone().tzinfo
+    if not user_tz_value:
+        return datetime.now().astimezone().tzinfo
+    alias = user_tz_value.strip()
+    # Простейшие алиасы → IANA
+    aliases_map = {
+        "moscow": "Europe/Moscow",
+        "msk": "Europe/Moscow",
+        "spb": "Europe/Moscow",
+        "kiev": "Europe/Kyiv",
+        "kyiv": "Europe/Kyiv",
+        "minsk": "Europe/Minsk",
+        "tbilisi": "Asia/Tbilisi",
+        "almaty": "Asia/Almaty",
+        "astana": "Asia/Almaty",
+        "ekb": "Asia/Yekaterinburg",
+        "yekaterinburg": "Asia/Yekaterinburg",
+        "novosibirsk": "Asia/Novosibirsk",
+        "samara": "Europe/Samara",
+        "omsk": "Asia/Omsk",
+        "utc": "UTC",
+        "gmt": "UTC",
+    }
+    key = alias.lower()
+    if "/" not in alias and key in aliases_map:
+        alias = aliases_map[key]
+    try:
+        return ZoneInfo(alias)
+    except ZoneInfoNotFoundError:
+        logger.warning(f"Не найден IANA TZ '{user_tz_value}', использую UTC")
+        return timezone.utc
+
+USER_TZINFO = _resolve_user_tz(USER_TZ)
 logger.info(f"Использую часовой пояс: {USER_TZ or str(USER_TZINFO)}")
 
 # Пути данных/БД с поддержкой ENV для персистентности
