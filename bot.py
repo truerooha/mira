@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import shutil
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -34,13 +35,25 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPEN_API_KEY")
 
-# Пути данных
-BASE_DATA_DIR = Path("data")
+# Пути данных/БД с поддержкой ENV для персистентности
+DB_PATH_ENV = os.getenv("DB_PATH")
+DATA_DIR_ENV = os.getenv("DATA_DIR")
+
+if DB_PATH_ENV:
+    DB_PATH = Path(DB_PATH_ENV)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+else:
+    BASE_DATA_DIR = Path(DATA_DIR_ENV) if DATA_DIR_ENV else Path("data")
+    BASE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DB_PATH = BASE_DATA_DIR / "mira_brain.db"
+
+BASE_DATA_DIR = DB_PATH.parent
 TRANSCRIPTS_DIR = BASE_DATA_DIR / "transcripts"
 TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Инициализируем базу данных и движки категоризации
-db = DatabaseManager(str(BASE_DATA_DIR / "mira_brain.db"))
+logger.info(f"Использую путь БД: {DB_PATH}")
+db = DatabaseManager(str(DB_PATH))
 categorizer = CategorizationEngine()
 ai_categorizer = AICategorizer(DEEPSEEK_API_KEY) if DEEPSEEK_API_KEY else None
 smart_tell = SmartTellEngine(db, DEEPSEEK_API_KEY)
