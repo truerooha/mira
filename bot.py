@@ -28,6 +28,9 @@ except Exception:
     APIStatusError = Exception
     RateLimitError = Exception
 
+# Фразы ожидания
+from waiting_messages import get_waiting_message
+
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -254,8 +257,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
     
-    # Отправляем сообщение "Думаю..."
-    thinking_msg = await update.message.reply_text("🤔 Думаю...")
+    # Отправляем динамическое сообщение ожидания
+    thinking_msg = await update.message.reply_text(f"🤔 {get_waiting_message()}")
     
     try:
         # Классифицируем намерение пользователя
@@ -325,7 +328,7 @@ async def process_text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE,
     """Обрабатывает текстовую запись как обычное сообщение для сохранения"""
     # Если сообщение не передано, создаем новое
     if thinking_msg is None:
-        thinking_msg = await update.message.reply_text("🤔 Думаю...")
+        thinking_msg = await update.message.reply_text(f"🤔 {get_waiting_message()}")
     
     # Сохраняем запись
     entry_id = db.add_entry(
@@ -399,9 +402,7 @@ async def process_text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE,
             })
     
     # Формируем ответ
-    response = f"🧠 Запомнил! (запись #{entry_id})"
-    if ai_used:
-        response += " 🤖"
+    response = f"🧠 Запомнила!"
     
     if categorization_result["entities"]:
         entities_text = ", ".join([e["name"] for e in categorization_result["entities"][:3]])
@@ -446,8 +447,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Постобработка транскрипта для восстановления вопросительных знаков
         processed_text = postprocess_transcript(transcript_text.strip())
 
-        # Отправляем сообщение "Думаю..."
-        thinking_msg = await update.message.reply_text("🤔 Думаю...")
+        # Отправляем динамическое сообщение ожидания
+        thinking_msg = await update.message.reply_text(f"🤔 {get_waiting_message()}")
 
         try:
             # Классифицируем намерение пользователя
@@ -589,10 +590,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         })
                 
                 # Формируем ответ
-                response = f"🧠 Запомнил! (запись #{entry_id})"
-                if ai_used:
-                    response += " 🤖"
-                
+                response = f"🧠 Запомнила!"
+
                 if categorization_result["entities"]:
                     entities_text = ", ".join([e["name"] for e in categorization_result["entities"][:3]])
                     response += f"\n🏷️ Сущности: {entities_text}"
