@@ -1,8 +1,8 @@
 # Зависимости для проекта "Второй мозг"
 # Персональный голосовой интеллект
 
-# Telegram Bot API
-python-telegram-bot==20.7
+# Telegram Bot API (совместимо с Python 3.13)
+python-telegram-bot==21.6
 
 # Работа с переменными окружения
 python-dotenv==1.0.0

@@ -262,18 +262,14 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Скачиваем файл
     await file.download_to_drive(str(ogg_path))
 
-    # Конвертируем ogg → wav
-    subprocess.run(["ffmpeg", "-y", "-i", str(ogg_path), str(wav_path)],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # Распознаём через OpenAI Whisper API
+    # Распознаём через OpenAI Whisper API (напрямую из .ogg, без ffmpeg)
     if not openai_client:
         await update.message.reply_text("❌ Не настроен OPENAI_API_KEY/OPEN_API_KEY для Whisper API")
         cleanup_audio_files(ogg_path, wav_path)
         return
 
     try:
-        with open(wav_path, "rb") as audio_file:
+        with open(ogg_path, "rb") as audio_file:
             transcript_text = openai_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
