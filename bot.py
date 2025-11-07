@@ -10,7 +10,7 @@ except Exception:
     ZoneInfoNotFoundError = Exception
 from pathlib import Path
 import shutil
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 from database import DatabaseManager
@@ -20,6 +20,7 @@ from smart_tell import SmartTellEngine
 from intent_classifier import IntentClassifier, IntentType
 from greeting_response_agent import GreetingResponseAgent
 from openai import OpenAI
+from versioning import CURRENT_VERSION, get_pending_releases
 try:
     # Исключения SDK для точной диагностики
     from openai import APIConnectionError, APIStatusError, RateLimitError
@@ -155,6 +156,52 @@ def cleanup_audio_files(ogg_path: Path, wav_path: Path) -> None:
         logger.error(f"Ошибка при удалении аудиофайлов: {e}")
 
 import re
+
+
+async def send_release_announcements(bot: Bot, user_id: int) -> None:
+    """Отправляет пользователю сообщения о релизах, которые он ещё не видел."""
+
+    last_seen_version = db.get_user_last_seen_version(user_id)
+    pending_releases = get_pending_releases(last_seen_version)
+
+    if not pending_releases:
+        if last_seen_version != CURRENT_VERSION:
+            db.update_user_last_seen_version(user_id, CURRENT_VERSION)
+        return
+
+    for release in pending_releases:
+        await bot.send_message(chat_id=user_id, text=release.message)
+
+    db.update_user_last_seen_version(user_id, pending_releases[-1].version)
+
+
+async def ensure_release_announcements(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Безопасно отправляет релизы через контекст обработчика."""
+
+    try:
+        await send_release_announcements(context.bot, user_id)
+    except Exception as e:
+        logger.error(f"Ошибка отправки релизного уведомления пользователю {user_id}: {e}")
+
+
+async def broadcast_release_announcements(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Рассылает актуальные релизные сообщения всем известным пользователям."""
+
+    try:
+        user_ids = db.get_known_user_ids()
+        if not user_ids:
+            logger.info("Нет известных пользователей для рассылки релизов")
+            return
+
+        logger.info(f"Запускаю массовую рассылку релизов для {len(user_ids)} пользователей")
+        for user_id in user_ids:
+            try:
+                await send_release_announcements(context.bot, user_id)
+            except Exception as user_err:
+                logger.error(f"Ошибка релизной рассылки пользователю {user_id}: {user_err}")
+    except Exception as e:
+        logger.error(f"Ошибка при массовой рассылке релизов: {e}")
+
 
 def parse_reminder_datetime(text: str, date_parser):
     """
@@ -346,6 +393,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thinking_msg = await update.message.reply_text(f"🤔 {get_waiting_message()}")
     
     try:
+        await ensure_release_announcements(user_id, context)
+
         # Классифицируем намерение пользователя
         if intent_classifier:
             intent_type, intent_info = await intent_classifier.classify_intent(text)
@@ -536,6 +585,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thinking_msg = await update.message.reply_text(f"🤔 {get_waiting_message()}")
 
         try:
+            await ensure_release_announcements(user_id, context)
+
             # Классифицируем намерение пользователя
             if intent_classifier:
                 intent_type, intent_info = await intent_classifier.classify_intent(processed_text)
@@ -730,7 +781,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Искать информацию в твоей базе знаний. Даты, имена, события, что угодно\n\n"
 
         "💡 Примеры:\n"
-        "• 'Привет, Мира. Напомни мне сходить к парикмахему завтра в 10:00? → добавлю напоминание\n"
+        "• 'Привет, Мира. Напомни мне сходить к парикмахему завтра в 10:00' → добавлю напоминание\n"
         "• 'Напомни мне выключить кастрюлю через 20 минут→ добавлю напоминание\n"
         "• 'Сегодня я встретил Александра, он порекомендовал фильм Звездные войны' → сохраню информацию о встречах с людьми. Сохраню фильм в список просмотра\n"
         "• 'Что я знаю о Тимуре?' → расскажу информацию о Тимуре, когда ты с ним встречался, что о нём запоминал\n"
@@ -738,6 +789,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 'Инсайты' → покажу инсайты, связи между записями, о которых ты даже не задумывался\n\n"
         "✨ Просто говори или пиши естественно - я пойму!"
     )
+
+    if update.effective_user:
+        await ensure_release_announcements(update.effective_user.id, context)
 
 def main():
     print("🧠 Запускаю Миру...")
@@ -765,6 +819,11 @@ def main():
         logger.info(f"Перепланировано напоминаний: {len(future_reminders)}")
     except Exception as e:
         logger.error(f"Ошибка перепланирования напоминаний на старте: {e}")
+
+    if getattr(app, 'job_queue', None) is not None:
+        app.job_queue.run_once(broadcast_release_announcements, when=0)
+    else:
+        logger.warning("JobQueue недоступен, пропускаю массовую рассылку релизов")
     app.add_handler(MessageHandler(filters.COMMAND & filters.Regex("^/start$"), start))
     app.add_handler(MessageHandler(filters.VOICE, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

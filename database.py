@@ -403,6 +403,72 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка получения статистики: {e}")
             raise
+
+    # === ВЕРСИИ ПРИЛОЖЕНИЯ ===
+
+    def get_user_last_seen_version(self, user_id: int) -> Optional[str]:
+        """Вернуть последнюю версию приложения, которую мы показывали пользователю."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT last_seen_version
+                    FROM user_versions
+                    WHERE user_id = ?
+                    """,
+                    (user_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row["last_seen_version"]
+                return None
+        except Exception as e:
+            logger.error(f"Ошибка получения версии для пользователя {user_id}: {e}")
+            raise
+
+    def update_user_last_seen_version(self, user_id: int, version: str) -> None:
+        """Обновить версию приложения, которую пользователь уже увидел."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO user_versions (user_id, last_seen_version, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id) DO UPDATE
+                    SET last_seen_version = excluded.last_seen_version,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (user_id, version)
+                )
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Ошибка обновления версии для пользователя {user_id}: {e}")
+            raise
+
+    def get_known_user_ids(self) -> List[int]:
+        """Вернуть список пользователей, с которыми уже было взаимодействие."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT DISTINCT user_id
+                    FROM (
+                        SELECT user_id FROM entries
+                        UNION
+                        SELECT user_id FROM reminders
+                        UNION
+                        SELECT user_id FROM user_versions
+                    ) AS all_users
+                    ORDER BY user_id
+                    """
+                )
+                return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Ошибка получения списка пользователей: {e}")
+            raise
     
     def close(self):
         """Закрыть соединения (для SQLite не нужно, но для совместимости)"""

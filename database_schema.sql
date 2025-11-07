@@ -69,6 +69,13 @@ CREATE TABLE IF NOT EXISTS reminders (
     FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE SET NULL
 );
 
+-- Версии, которые пользователь уже видел (для релизных уведомлений)
+CREATE TABLE IF NOT EXISTS user_versions (
+    user_id INTEGER PRIMARY KEY,
+    last_seen_version TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Индексы для производительности
 CREATE INDEX IF NOT EXISTS idx_entries_user_id ON entries(user_id);
 CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at);
