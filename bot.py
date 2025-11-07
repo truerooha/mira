@@ -159,11 +159,89 @@ import re
 def parse_reminder_datetime(text: str, date_parser):
     """
     Вычисляет точный datetime для напоминания из произвольной русской фразы.
-    Поддерживает: завтра/дни недели/абсолютные даты + время вида 'в 7 вечера', 'в 19:00', 'в 7', 'к 7 утра'.
+    Поддерживает: завтра/дни недели/абсолютные даты + время вида 'в 7 вечера', 'в 19:00', 'в 7', 'к 7 утра',
+    а также относительные выражения вида 'через 10 минут'.
     """
     t = text.lower()
     base = date_parser.parse_text(t)
-    dt = base.get('datetime')
+
+    def _normalize_unit(word: str):
+        cleaned = re.sub(r"[^а-яё]", "", word.lower())
+        units_map = {
+            'seconds': {'секунд', 'секунда', 'секунды', 'секунду'},
+            'minutes': {'минута', 'минуту', 'минуты', 'минут'},
+            'hours': {'час', 'часа', 'часов'},
+            'days': {'день', 'дня', 'дней', 'сутки', 'суток'},
+            'weeks': {'неделя', 'неделю', 'недели', 'недель'},
+            'months': {'месяц', 'месяца', 'месяцев'},
+            'years': {'год', 'года', 'лет'},
+        }
+        for key, variants in units_map.items():
+            if cleaned in variants:
+                return key
+        return None
+
+    def _extract_relative_delta(text_lower: str):
+        if 'через' not in text_lower:
+            return None
+
+        after_keyword = text_lower.split('через', 1)[1]
+        total = timedelta(0)
+
+        for value, unit in re.findall(r"(\d+)\s*(секунд[а-я]*|минут[а-я]*|час[а-я]*|дн[еяй]+|сут[а-я]*|недел[яей]*|месяц[а-я]*|год[а-я]*)", after_keyword):
+            unit_key = _normalize_unit(unit)
+            amount = int(value)
+            if unit_key == 'seconds':
+                total += timedelta(seconds=amount)
+            elif unit_key == 'minutes':
+                total += timedelta(minutes=amount)
+            elif unit_key == 'hours':
+                total += timedelta(hours=amount)
+            elif unit_key == 'days':
+                total += timedelta(days=amount)
+            elif unit_key == 'weeks':
+                total += timedelta(weeks=amount)
+            elif unit_key == 'months':
+                total += timedelta(days=30 * amount)
+            elif unit_key == 'years':
+                total += timedelta(days=365 * amount)
+
+        if total == timedelta(0):
+            singular_patterns = [
+                (r"пол\s*-?\s*часа", timedelta(minutes=30)),
+                (r"секунд[ау]", timedelta(seconds=1)),
+                (r"минут[ау]", timedelta(minutes=1)),
+                (r"час(ик)?", timedelta(hours=1)),
+                (r"сутк[аи]", timedelta(days=1)),
+                (r"день", timedelta(days=1)),
+                (r"недел[яю]", timedelta(weeks=1)),
+                (r"месяц", timedelta(days=30)),
+                (r"год", timedelta(days=365)),
+            ]
+            for pattern, delta in singular_patterns:
+                if re.search(rf"\b{pattern}\b", after_keyword):
+                    total += delta
+
+        return total if total > timedelta(0) else None
+
+    relative_delta = _extract_relative_delta(t)
+
+    dt = None
+    dt_source = None
+
+    if relative_delta is not None:
+        dt = datetime.now(USER_TZINFO) + relative_delta
+        dt_source = 'relative'
+    elif base.get('datetime'):
+        dt = base.get('datetime')
+        dt_source = 'parsed'
+
+    if dt is None:
+        if 'завтра' in t:
+            dt = datetime.now(USER_TZINFO) + timedelta(days=1)
+        else:
+            dt = datetime.now(USER_TZINFO)
+        dt_source = 'fallback'
 
     m = re.search(r"\bв\s*(\d{1,2})(?::(\d{2}))?\s*(утра|дня|вечера|ночи)?\b", t)
     hour = None
@@ -180,28 +258,35 @@ def parse_reminder_datetime(text: str, date_parser):
         elif tod in ('дня',):
             if 1 <= hour <= 11:
                 hour += 12
-        else:
-            pass
 
-    if not dt:
-        if 'завтра' in t:
-            dt = datetime.now(USER_TZINFO) + timedelta(days=1)
-        else:
-            dt = datetime.now(USER_TZINFO)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=USER_TZINFO)
 
     if hour is not None:
         dt = dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    else:
-        if base.get('time_info') == 'вечером':
+    elif dt_source != 'relative':
+        time_info = base.get('time_info')
+        if time_info == 'вечером':
             dt = dt.replace(hour=19, minute=0, second=0, microsecond=0)
-        elif base.get('time_info') == 'утром':
+        elif time_info == 'утром':
             dt = dt.replace(hour=9, minute=0, second=0, microsecond=0)
-        elif base.get('time_info') == 'днем':
+        elif time_info == 'днем':
             dt = dt.replace(hour=13, minute=0, second=0, microsecond=0)
-        elif base.get('time_info') == 'ночью':
+        elif time_info == 'ночью':
             dt = dt.replace(hour=23, minute=0, second=0, microsecond=0)
         else:
             dt = dt.replace(hour=10, minute=0, second=0, microsecond=0)
+    else:
+        time_info = base.get('time_info')
+        if time_info and relative_delta is not None and relative_delta >= timedelta(hours=12):
+            if time_info == 'вечером':
+                dt = dt.replace(hour=19, minute=0, second=0, microsecond=0)
+            elif time_info == 'утром':
+                dt = dt.replace(hour=9, minute=0, second=0, microsecond=0)
+            elif time_info == 'днем':
+                dt = dt.replace(hour=13, minute=0, second=0, microsecond=0)
+            elif time_info == 'ночью':
+                dt = dt.replace(hour=23, minute=0, second=0, microsecond=0)
 
     return dt
 
@@ -646,10 +731,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         "💡 Примеры:\n"
         "• 'Привет, Мира. Напомни мне сходить к парикмахему завтра в 10:00? → добавлю напоминание\n"
-        "• 'Сегодня я встретил Александра, он порекомендовал фильм Звездные войны' → сохранение\n"
-        "• 'Что я знаю о Тимуре?' → поиск\n"
-        "• 'Статистика' → покажу статистику\n"
-        "• 'Инсайты' → покажу инсайты\n\n"
+        "• 'Напомни мне выключить кастрюлю через 20 минут→ добавлю напоминание\n"
+        "• 'Сегодня я встретил Александра, он порекомендовал фильм Звездные войны' → сохраню информацию о встречах с людьми. Сохраню фильм в список просмотра\n"
+        "• 'Что я знаю о Тимуре?' → расскажу информацию о Тимуре, когда ты с ним встречался, что о нём запоминал\n"
+        "• 'Статистика' → покажу статистику по всем записям\n"
+        "• 'Инсайты' → покажу инсайты, связи между записями, о которых ты даже не задумывался\n\n"
         "✨ Просто говори или пиши естественно - я пойму!"
     )
 
