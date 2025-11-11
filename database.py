@@ -403,6 +403,50 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Ошибка получения статистики: {e}")
             raise
+    
+    def get_total_users_count(self) -> int:
+        """Общее количество уникальных пользователей во всей системе."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT COUNT(DISTINCT user_id) as cnt
+                    FROM (
+                        SELECT user_id FROM entries
+                        UNION ALL
+                        SELECT user_id FROM reminders
+                        UNION ALL
+                        SELECT user_id FROM user_versions
+                    )
+                    """
+                )
+                row = cursor.fetchone()
+                return int(row["cnt"] if row and "cnt" in row.keys() else 0)
+        except Exception as e:
+            logger.error(f"Ошибка подсчёта общего количества пользователей: {e}")
+            raise
+    
+    def get_top_users_by_entries(self, limit: int = 5):
+        """Топ пользователей по количеству записей (сообщений). Возвращает список словарей {user_id, count}."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT user_id, COUNT(*) as count
+                    FROM entries
+                    GROUP BY user_id
+                    ORDER BY count DESC
+                    LIMIT ?
+                    """,
+                    (limit,)
+                )
+                rows = cursor.fetchall()
+                return [{"user_id": row["user_id"], "count": row["count"]} for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения топа пользователей по сообщениям: {e}")
+            raise
 
     # === ВЕРСИИ ПРИЛОЖЕНИЯ ===
 

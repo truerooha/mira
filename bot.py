@@ -43,6 +43,9 @@ WHISPER_PATH = os.getenv("WHISPER_PATH")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPEN_API_KEY")
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")  # int в строке
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")  # телеграм username без @
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")  # пароль для /admin_stats
 
 # Настройка часового пояса пользователя/бота (важно для напоминаний)
 USER_TZ = os.getenv("USER_TZ")  # например, "Europe/Moscow" или упрощённо "Moscow"
@@ -383,6 +386,53 @@ def schedule_reminder(job_queue, reminder_row: dict):
         name=f"reminder_{reminder_row['id']}"
     )
     logger.info(f"Запланировано напоминание #{reminder_row['id']} на {run_at.isoformat()}")
+
+def _is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверка прав администратора по user_id/username/паролю из аргументов команды."""
+    try:
+        user = update.effective_user
+        if not user:
+            return False
+        uid_ok = False
+        if ADMIN_USER_ID:
+            try:
+                uid_ok = int(ADMIN_USER_ID) == int(user.id)
+            except Exception:
+                uid_ok = False
+        uname_ok = False
+        if ADMIN_USERNAME and user.username:
+            uname_ok = ADMIN_USERNAME.strip().lstrip("@").lower() == str(user.username).strip().lstrip("@").lower()
+        pwd_ok = False
+        if ADMIN_PASSWORD and getattr(context, "args", None):
+            # команда вида: /admin_stats <password>
+            if len(context.args) >= 1:
+                pwd_ok = context.args[0] == ADMIN_PASSWORD
+        return bool(uid_ok or uname_ok or pwd_ok)
+    except Exception:
+        return False
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать глобальную статистику: количество пользователей и топ-5 по сообщениям (записям)."""
+    if not _is_admin(update, context):
+        await update.message.reply_text("⛔ Недостаточно прав для этой команды.")
+        return
+    try:
+        total_users = db.get_total_users_count()
+        top_users = db.get_top_users_by_entries(limit=5) or []
+        lines = []
+        lines.append(f"👥 Всего пользователей: {total_users}")
+        if top_users:
+            lines.append("")
+            lines.append("🏆 Топ-5 по количеству сообщений:")
+            for i, row in enumerate(top_users, start=1):
+                lines.append(f"{i}. user_id {row['user_id']}: {row['count']}")
+        else:
+            lines.append("")
+            lines.append("Пока нет данных по сообщениям.")
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        logger.error(f"Ошибка генерации админ-статистики: {e}")
+        await update.message.reply_text("❌ Ошибка при получении статистики.")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает текстовые сообщения с помощью AI-классификатора намерений"""
@@ -825,6 +875,7 @@ def main():
     else:
         logger.warning("JobQueue недоступен, пропускаю массовую рассылку релизов")
     app.add_handler(MessageHandler(filters.COMMAND & filters.Regex("^/start$"), start))
+    app.add_handler(MessageHandler(filters.COMMAND & filters.Regex(r"^/admin_stats(?:\\s+.*)?$"), admin_stats))
     app.add_handler(MessageHandler(filters.VOICE, handle_audio))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling()
